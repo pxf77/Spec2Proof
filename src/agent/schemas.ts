@@ -86,13 +86,35 @@ export const criterionResultSchema = z.object({
   explanation: z.string().optional(),
 });
 
+const pullRequestContextSchema = z.object({
+  title: z.string(),
+  author: z.string(),
+  baseRef: z.string(),
+  headRef: z.string(),
+  htmlUrl: z.string(),
+  changedFiles: z.array(
+    z.object({
+      path: z.string(),
+      status: z.string(),
+      additions: z.number().int().nonnegative(),
+      deletions: z.number().int().nonnegative(),
+      patch: z.string().optional(),
+      patchTruncated: z.boolean().optional(),
+    }),
+  ),
+  changedFilesTruncated: z.boolean(),
+});
+
 export const runtimeExecutionRequestSchema = z.object({
   run: z.object({
     runId: z.string().min(1),
+    installationId: z.number().int().positive().optional(),
     repository: z.string().min(1),
     pullRequestNumber: z.number().int().positive(),
     headSha: z.string().min(7),
     targetEnvironment: z.string().min(1),
+    targetBaseUrl: z.string().url().optional(),
+    pullRequestContext: pullRequestContextSchema.optional(),
     lifecycle: z.literal("RUNNING"),
     coverageComplete: z.boolean(),
     criteria: z.array(acceptanceCriterionSchema).min(1),
@@ -103,4 +125,10 @@ export const runtimeExecutionRequestSchema = z.object({
     createdAt: z.string(),
     startedAt: z.string().optional(),
   }),
+});
+
+export const runtimeExecutionResponseSchema = z.object({
+  runId: z.string().min(1),
+  runtimeSessionId: z.string().min(1),
+  results: z.array(criterionResultSchema),
 });

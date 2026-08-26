@@ -1,34 +1,46 @@
-import { describe, expect, it } from 'vitest'
-
-import { agentRuntimeEnvSchema } from '../src/config/env.js'
+import assert from "node:assert/strict";
+import test from "node:test";
+import { agentRuntimeEnvSchema, webhookEnvSchema } from "../src/config/env.js";
 
 const requiredRuntimeEnv = {
-  SPEC2PROOF_ALLOWED_HOSTS: 'staging.example.com, API-STAGING.EXAMPLE.COM ',
-}
+  SPEC2PROOF_ALLOWED_HOSTS: "staging.example.com, API-STAGING.EXAMPLE.COM ",
+};
 
-describe('agent runtime environment', () => {
-  it('applies boolean defaults using the transformed output type', () => {
-    const env = agentRuntimeEnvSchema.parse(requiredRuntimeEnv)
+test("agent runtime environment applies boolean defaults", () => {
+  const env = agentRuntimeEnvSchema.parse(requiredRuntimeEnv);
 
-    expect(env.SPEC2PROOF_ALLOW_HTTP).toBe(false)
-    expect(env.SPEC2PROOF_ALLOW_PRIVATE_HOSTS).toBe(false)
-    expect(env.SPEC2PROOF_BROWSER_HEADLESS).toBe(true)
-    expect(env.SPEC2PROOF_ALLOWED_HOSTS).toEqual([
-      'staging.example.com',
-      'api-staging.example.com',
-    ])
-  })
+  assert.equal(env.SPEC2PROOF_ALLOW_HTTP, false);
+  assert.equal(env.SPEC2PROOF_ALLOW_PRIVATE_HOSTS, false);
+  assert.equal(env.SPEC2PROOF_BROWSER_HEADLESS, true);
+  assert.deepEqual(env.SPEC2PROOF_ALLOWED_HOSTS, [
+    "staging.example.com",
+    "api-staging.example.com",
+  ]);
+});
 
-  it('parses explicit boolean strings from process-style environment values', () => {
-    const env = agentRuntimeEnvSchema.parse({
-      ...requiredRuntimeEnv,
-      SPEC2PROOF_ALLOW_HTTP: 'true',
-      SPEC2PROOF_ALLOW_PRIVATE_HOSTS: 'true',
-      SPEC2PROOF_BROWSER_HEADLESS: 'false',
-    })
+test("agent runtime environment parses explicit boolean strings", () => {
+  const env = agentRuntimeEnvSchema.parse({
+    ...requiredRuntimeEnv,
+    SPEC2PROOF_ALLOW_HTTP: "true",
+    SPEC2PROOF_ALLOW_PRIVATE_HOSTS: "true",
+    SPEC2PROOF_BROWSER_HEADLESS: "false",
+  });
 
-    expect(env.SPEC2PROOF_ALLOW_HTTP).toBe(true)
-    expect(env.SPEC2PROOF_ALLOW_PRIVATE_HOSTS).toBe(true)
-    expect(env.SPEC2PROOF_BROWSER_HEADLESS).toBe(false)
-  })
-})
+  assert.equal(env.SPEC2PROOF_ALLOW_HTTP, true);
+  assert.equal(env.SPEC2PROOF_ALLOW_PRIVATE_HOSTS, true);
+  assert.equal(env.SPEC2PROOF_BROWSER_HEADLESS, false);
+});
+
+test("webhook environment normalizes escaped PEM newlines and URLs", () => {
+  const env = webhookEnvSchema.parse({
+    GITHUB_WEBHOOK_SECRET: "0123456789abcdef",
+    GITHUB_APP_ID: "1234",
+    GITHUB_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\n01234567890123456789012345678901\\n-----END PRIVATE KEY-----",
+    GITHUB_API_URL: "https://api.github.com/",
+  });
+
+  assert.equal(env.GITHUB_APP_ID, 1234);
+  assert.match(env.GITHUB_PRIVATE_KEY, /\n/u);
+  assert.equal(env.GITHUB_API_URL, "https://api.github.com");
+  assert.equal(env.SPEC2PROOF_AGENT_RUNTIME_URL, "http://127.0.0.1:8080/invocations");
+});

@@ -48,6 +48,7 @@ export class StrandsRunExecutor implements RunExecutor {
           pullRequestNumber: run.pullRequestNumber,
           headSha: run.headSha,
           targetEnvironment: run.targetEnvironment,
+          targetBaseUrl: run.targetBaseUrl,
           criteria: run.criteria,
           plan: run.plan,
         }),

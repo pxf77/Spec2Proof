@@ -16,6 +16,7 @@ export interface RunExecutor {
 
 export interface RunStore {
   get(runId: string): Promise<AcceptanceRun | undefined>;
+  findLatest(repository: string, pullRequestNumber: number): Promise<AcceptanceRun | undefined>;
   save(run: AcceptanceRun): Promise<void>;
 }
 
@@ -23,6 +24,27 @@ export interface RunPublisher {
   planReady(run: AcceptanceRun): Promise<void>;
   runStarted(run: AcceptanceRun): Promise<void>;
   runCompleted(run: AcceptanceRun): Promise<void>;
+}
+
+export interface PullRequestReader {
+  read(input: {
+    installationId: number;
+    repository: string;
+    pullRequestNumber: number;
+  }): Promise<PrepareRunInput>;
+  getHeadSha(input: {
+    installationId: number;
+    repository: string;
+    pullRequestNumber: number;
+  }): Promise<string>;
+}
+
+export interface ReviewerAuthorizer {
+  canApprove(input: {
+    installationId: number;
+    repository: string;
+    username: string;
+  }): Promise<boolean>;
 }
 
 export interface Clock {
