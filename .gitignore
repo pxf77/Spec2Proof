@@ -13,6 +13,9 @@ coverage/
 !.env.example
 *.pem
 *.key
+agentcore/.env.local
+agentcore/aws-targets.json
+agentcore/.cli/
 
 # Runtime artifacts
 artifacts/

@@ -1,0 +1,57 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f4f6f8;
+  color: #18212f;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; }
+button, input { font: inherit; }
+button { cursor: pointer; }
+
+.shell {
+  width: min(720px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 64px 0;
+}
+
+header { margin-bottom: 28px; }
+h1 { margin: 4px 0 10px; font-size: clamp(2.2rem, 7vw, 4rem); }
+h2 { margin: 0 0 8px; }
+p { line-height: 1.6; }
+.eyebrow { margin: 0; font-size: .82rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+
+.card {
+  padding: 28px;
+  border: 1px solid #dce2e8;
+  border-radius: 18px;
+  background: white;
+  box-shadow: 0 18px 50px rgba(23, 33, 47, .08);
+}
+
+.product-row, .total-row, .coupon-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.product-row { padding-bottom: 24px; border-bottom: 1px solid #e8ecf0; }
+label { display: block; margin: 24px 0 8px; font-weight: 700; }
+input { flex: 1; min-width: 0; padding: 12px 14px; border: 1px solid #aeb8c4; border-radius: 10px; }
+button { border: 0; border-radius: 10px; padding: 12px 18px; font-weight: 700; }
+.coupon-row button { background: #e7edf4; color: #18212f; }
+.primary { width: 100%; margin-top: 20px; background: #18212f; color: white; }
+.message { min-height: 26px; margin: 10px 0 0; }
+.message.ok { color: #087443; }
+.message.error { color: #b42318; }
+.total-row { margin-top: 24px; padding-top: 20px; border-top: 1px solid #e8ecf0; font-size: 1.2rem; }
+.success { text-align: center; }
+.success-mark { margin: 0; font-size: 3rem; color: #087443; }
+
+@media (max-width: 520px) {
+  .shell { padding: 32px 0; }
+  .card { padding: 20px; }
+  .product-row { align-items: flex-start; }
+}

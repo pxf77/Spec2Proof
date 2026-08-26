@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Spec2Proof evidence storage and AgentCore Runtime execution policy.
+
+Parameters:
+  EvidenceRetentionDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 365
+
+Resources:
+  EvidenceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-evidence
+            Status: Enabled
+            ExpirationInDays: !Ref EvidenceRetentionDays
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+
+  RuntimeExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref RuntimeManagedPolicy
+
+  RuntimeManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Minimum Spec2Proof Runtime access to Bedrock models, AgentCore Browser, and evidence storage.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: BedrockModel
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+              - bedrock:InvokeModelWithResponseStream
+            Resource: "*"
+          - Sid: AgentCoreBrowser
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:StartBrowserSession
+              - bedrock-agentcore:GetBrowserSession
+              - bedrock-agentcore:StopBrowserSession
+              - bedrock-agentcore:UpdateBrowserStream
+              - bedrock-agentcore:ConnectBrowserAutomationStream
+            Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:browser/*
+          - Sid: RuntimeImageAndTelemetry
+            Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - xray:PutTraceSegments
+              - xray:PutTelemetryRecords
+              - cloudwatch:PutMetricData
+            Resource: "*"
+          - Sid: EvidenceObjects
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: !Sub ${EvidenceBucket.Arn}/*
+
+Outputs:
+  EvidenceBucketName:
+    Value: !Ref EvidenceBucket
+  EvidenceBucketArn:
+    Value: !GetAtt EvidenceBucket.Arn
+  RuntimeManagedPolicyArn:
+    Value: !Ref RuntimeManagedPolicy
+  RuntimeExecutionRoleArn:
+    Value: !GetAtt RuntimeExecutionRole.Arn

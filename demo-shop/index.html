@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DemoShop · Spec2Proof</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">Spec2Proof reference target</p>
+      <h1>DemoShop</h1>
+      <p>A deterministic storefront used to demonstrate PR acceptance execution.</p>
+    </header>
+
+    <section class="card" data-testid="checkout-card">
+      <div class="product-row">
+        <div>
+          <h2>Agent Builder Kit</h2>
+          <p>One synthetic product. No real payment or personal data.</p>
+        </div>
+        <strong>$<span data-testid="subtotal">100.00</span></strong>
+      </div>
+
+      <label for="coupon">Coupon</label>
+      <div class="coupon-row">
+        <input id="coupon" data-testid="coupon-input" autocomplete="off" placeholder="SAVE20">
+        <button data-testid="apply-coupon" type="button">Apply</button>
+      </div>
+      <p class="message" data-testid="coupon-message" aria-live="polite"></p>
+
+      <div class="total-row">
+        <span>Total</span>
+        <strong>$<span data-testid="order-total">100.00</span></strong>
+      </div>
+      <button class="primary" data-testid="checkout" type="button">Place test order</button>
+    </section>
+
+    <section class="card success" data-testid="success-panel" hidden>
+      <p class="success-mark">✓</p>
+      <h2>Order confirmed</h2>
+      <p>This is a synthetic success page.</p>
+      <p>Final total: $<span data-testid="success-total">100.00</span></p>
+    </section>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
