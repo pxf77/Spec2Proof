@@ -23,6 +23,7 @@ blob-report/
 
 # AWS and infrastructure
 .aws-sam/
+.bedrock_agentcore/
 cdk.out/
 .terraform/
 *.tfstate
