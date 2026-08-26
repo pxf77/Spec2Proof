@@ -80,13 +80,13 @@ export class GitHubWebhookDispatcher {
       return;
     }
 
-    context = {
+    const context = {
       installationId: event.installation.id,
       repository: event.repository.full_name,
       pullRequestNumber: event.issue.number,
       actor: event.comment.user.login,
     };
-    client = this.dependencies.clients.forInstallation(context.installationId);
+    const client = this.dependencies.clients.forInstallation(context.installationId);
 
     this.dependencies.logger.info("github.command.received", {
       deliveryId,

@@ -55,7 +55,7 @@ export function startWebhookServer(): void {
     planGenerator,
     executor: new AgentRuntimeRunExecutor({
       endpoint: environment.SPEC2PROOF_AGENT_RUNTIME_URL,
-      timeoutMs: environment.SPEC2PROOOF_AGENT_RUNTIME_TIMEOUT_SECONDS * 1_000,
+      timeoutMs: environment.SPEC2PROOF_AGENT_RUNTIME_TIMEOUT_SECONDS * 1_000,
     }),
     store: new InMemoryRunStore(),
     publisher,
