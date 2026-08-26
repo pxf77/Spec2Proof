@@ -1,0 +1,46 @@
+name: Verify and remove one-time repair
+
+on:
+  push:
+    branches:
+      - feat/github-app-pr-flow
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-clean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/github-app-pr-flow
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Verify typecheck, tests, and build
+        run: npm run check
+
+      - name: Remove one-time workflows
+        run: |
+          rm -f .github/workflows/repair-github-flow.yml
+          rm -f .github/workflows/cleanup-github-flow-repair.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/repair-github-flow.yml .github/workflows/cleanup-github-flow-repair.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore: remove one-time repair workflow"
+          git push origin HEAD:feat/github-app-pr-flow
