@@ -1,0 +1,68 @@
+name: One-time GitHub flow repair
+
+on:
+  push:
+    branches:
+      - feat/github-app-pr-flow
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/github-app-pr-flow
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Apply scoped static fixes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          webhook = Path("src/apps/webhook.ts")
+          text = webhook.read_text()
+          text = text.replace(
+              "SPEC2PROOOF_AGENT_RUNTIME_TIMEOUT_SECONDS",
+              "SPEC2PROOF_AGENT_RUNTIME_TIMEOUT_SECONDS",
+          )
+          webhook.write_text(text)
+
+          dispatcher = Path("src/github/dispatcher.ts")
+          text = dispatcher.read_text()
+          text = text.replace("\n    context = {\n", "\n    const context = {\n", 1)
+          text = text.replace(
+              "\n    client = this.dependencies.clients.forInstallation(context.installationId);\n",
+              "\n    const client = this.dependencies.clients.forInstallation(context.installationId);\n",
+              1,
+          )
+          dispatcher.write_text(text)
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Verify typecheck, tests, and build
+        run: npm run check
+
+      - name: Commit verified repair
+        run: |
+          if git diff --quiet; then
+            echo "No repair changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/apps/webhook.ts src/github/dispatcher.ts
+          git commit -m "fix: repair GitHub dispatcher type errors"
+          git push origin HEAD:feat/github-app-pr-flow
