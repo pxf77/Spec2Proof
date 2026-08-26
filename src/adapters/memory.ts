@@ -16,6 +16,19 @@ export class InMemoryRunStore implements RunStore {
     return run ? structuredClone(run) : undefined;
   }
 
+  public async findLatest(
+    repository: string,
+    pullRequestNumber: number,
+  ): Promise<AcceptanceRun | undefined> {
+    const latest = [...this.runs.values()]
+      .reverse()
+      .find(
+        (run) =>
+          run.repository === repository && run.pullRequestNumber === pullRequestNumber,
+      );
+    return latest ? structuredClone(latest) : undefined;
+  }
+
   public async save(run: AcceptanceRun): Promise<void> {
     this.runs.set(run.runId, structuredClone(run));
   }

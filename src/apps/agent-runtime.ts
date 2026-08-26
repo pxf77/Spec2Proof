@@ -40,11 +40,11 @@ export function startAgentRuntime(): void {
         context: { sessionId: string },
       ) => {
         const results = await executor.execute(request.run);
-        return JSON.stringify({
+        return {
           runId: request.run.runId,
           runtimeSessionId: context.sessionId,
           results,
-        });
+        };
       },
     },
   });

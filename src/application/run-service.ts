@@ -29,6 +29,7 @@ export class RunService {
 
   public async prepareRun(input: PrepareRunInput): Promise<AcceptanceRun> {
     validateCriteria(input.criteria);
+    validateTarget(input.targetBaseUrl);
 
     const runId = this.dependencies.ids.next("run");
     const plan = await this.dependencies.planGenerator.generate({ ...input, runId });
@@ -36,10 +37,15 @@ export class RunService {
 
     const run: AcceptanceRun = {
       runId,
+      installationId: input.installationId,
       repository: input.repository,
       pullRequestNumber: input.pullRequestNumber,
       headSha: input.headSha,
       targetEnvironment: input.targetEnvironment,
+      targetBaseUrl: input.targetBaseUrl,
+      pullRequestContext: input.pullRequestContext
+        ? structuredClone(input.pullRequestContext)
+        : undefined,
       lifecycle: "AWAITING_APPROVAL",
       coverageComplete: false,
       criteria: structuredClone(input.criteria),
@@ -108,6 +114,11 @@ export class RunService {
       }));
     }
 
+    const current = await this.requireRun(runId);
+    if (current.lifecycle === "COMPLETED" && current.verdict === "CANCELLED") {
+      return current;
+    }
+
     const summary = summarizeRun(run.criteria, results);
     const completed: AcceptanceRun = {
       ...run,
@@ -129,7 +140,6 @@ export class RunService {
       return run;
     }
 
-    await this.dependencies.executor.cancel?.(runId);
     const cancelled: AcceptanceRun = {
       ...run,
       lifecycle: "COMPLETED",
@@ -139,7 +149,14 @@ export class RunService {
       completedAt: this.dependencies.clock.now().toISOString(),
     };
 
+    // Persist the terminal state before aborting the executor so a concurrently
+    // unwinding execution cannot overwrite cancellation with INCONCLUSIVE.
     await this.dependencies.store.save(cancelled);
+    try {
+      await this.dependencies.executor.cancel?.(runId);
+    } catch {
+      // Cancellation is best effort after the terminal state is durable.
+    }
     await this.dependencies.publisher.runCompleted(cancelled);
     return cancelled;
   }
@@ -148,12 +165,29 @@ export class RunService {
     return this.dependencies.store.get(runId);
   }
 
+  public async findLatestRun(
+    repository: string,
+    pullRequestNumber: number,
+  ): Promise<AcceptanceRun | undefined> {
+    return this.dependencies.store.findLatest(repository, pullRequestNumber);
+  }
+
   private async requireRun(runId: string): Promise<AcceptanceRun> {
     const run = await this.dependencies.store.get(runId);
     if (!run) {
       throw new Error(`Run not found: ${runId}`);
     }
     return run;
+  }
+}
+
+function validateTarget(targetBaseUrl: string | undefined): void {
+  if (!targetBaseUrl) {
+    return;
+  }
+  const target = new URL(targetBaseUrl);
+  if (target.protocol !== "https:" && target.protocol !== "http:") {
+    throw new Error(`Unsupported target protocol: ${target.protocol}`);
   }
 }
 

@@ -95,12 +95,34 @@ export interface CriterionResult {
   explanation?: string;
 }
 
+export interface PullRequestFileSummary {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch?: string;
+  patchTruncated?: boolean;
+}
+
+export interface PullRequestContext {
+  title: string;
+  author: string;
+  baseRef: string;
+  headRef: string;
+  htmlUrl: string;
+  changedFiles: PullRequestFileSummary[];
+  changedFilesTruncated: boolean;
+}
+
 export interface AcceptanceRun {
   runId: string;
+  installationId?: number;
   repository: string;
   pullRequestNumber: number;
   headSha: string;
   targetEnvironment: string;
+  targetBaseUrl?: string;
+  pullRequestContext?: PullRequestContext;
   lifecycle: RunLifecycle;
   verdict?: RunVerdict;
   coverageComplete: boolean;
@@ -116,9 +138,12 @@ export interface AcceptanceRun {
 }
 
 export interface PrepareRunInput {
+  installationId?: number;
   repository: string;
   pullRequestNumber: number;
   headSha: string;
   targetEnvironment: string;
+  targetBaseUrl?: string;
+  pullRequestContext?: PullRequestContext;
   criteria: AcceptanceCriterion[];
 }
