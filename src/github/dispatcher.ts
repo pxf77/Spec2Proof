@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { RunService } from "../application/run-service.js";
-import type { PullRequestReader, ReviewerAuthorizer } from "../application/ports.js";
+import type {
+  PullRequestReader,
+  ReviewerAuthorizer,
+  RunExecutionScheduler,
+} from "../application/ports.js";
 import type { Logger } from "../observability/logger.js";
 import { parseSpec2ProofCommand, type Spec2ProofCommand } from "./webhook.js";
 import type {
@@ -42,6 +46,7 @@ const pullRequestEventSchema = z.object({
 
 export interface GitHubWebhookDispatcherDependencies {
   runService: RunService;
+  executionScheduler: RunExecutionScheduler;
   pullRequests: PullRequestReader;
   authorizer: ReviewerAuthorizer;
   clients: GitHubInstallationClientFactory;
@@ -99,7 +104,7 @@ export class GitHubWebhookDispatcher {
     try {
       switch (command.name) {
         case "run":
-          await this.handleRun(context, client);
+          await this.handleRun(context);
           break;
         case "approve":
           await this.handleApprove(context);
@@ -170,10 +175,7 @@ export class GitHubWebhookDispatcher {
     );
   }
 
-  private async handleRun(
-    context: CommandContext,
-    client: GitHubInstallationClient,
-  ): Promise<void> {
+  private async handleRun(context: CommandContext): Promise<void> {
     const input = await this.dependencies.pullRequests.read(context);
     const latest = await this.dependencies.runService.findLatestRun(
       context.repository,
@@ -184,11 +186,7 @@ export class GitHubWebhookDispatcher {
       latest.headSha === input.headSha &&
       latest.lifecycle !== "COMPLETED"
     ) {
-      await client.createIssueComment(
-        context.repository,
-        context.pullRequestNumber,
-        `## Spec2Proof\n\nRun \`${latest.runId}\` is already ${latest.lifecycle.toLowerCase().replaceAll("_", " ")} for commit \`${input.headSha.slice(0, 12)}\`.`,
-      );
+      await this.dependencies.runService.publishRun(latest.runId);
       return;
     }
     await this.dependencies.runService.prepareRun(input);
@@ -203,7 +201,7 @@ export class GitHubWebhookDispatcher {
       context.actor,
       currentHeadSha,
     );
-    await this.dependencies.runService.executeRun(approved.runId);
+    await this.dependencies.executionScheduler.schedule(approved.runId);
   }
 
   private async handleReject(
@@ -239,8 +237,9 @@ export class GitHubWebhookDispatcher {
     if (latest.lifecycle !== "COMPLETED") {
       throw new Error(`Run ${latest.runId} has not completed`);
     }
-    const currentHeadSha = await this.dependencies.pullRequests.getHeadSha(context);
-    if (currentHeadSha !== latest.headSha) {
+
+    const input = await this.dependencies.pullRequests.read(context);
+    if (input.headSha !== latest.headSha) {
       throw new Error("The pull request head changed; start a full run instead");
     }
 
@@ -258,15 +257,11 @@ export class GitHubWebhookDispatcher {
       return;
     }
 
-    await this.dependencies.runService.prepareRun({
-      installationId: context.installationId,
-      repository: latest.repository,
-      pullRequestNumber: latest.pullRequestNumber,
-      headSha: latest.headSha,
-      targetEnvironment: latest.targetEnvironment,
-      pullRequestContext: latest.pullRequestContext,
-      criteria: latest.criteria.filter((criterion) => failedIds.has(criterion.id)),
-    });
+    const criteria = input.criteria.filter((criterion) => failedIds.has(criterion.id));
+    if (criteria.length === 0) {
+      throw new Error("Failed criteria are no longer present in the pull request SPEC");
+    }
+    await this.dependencies.runService.prepareRun({ ...input, criteria });
   }
 
   private async handleStatus(

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.agentcore.aws.dev/v1/agentcore.json",
+  "name": "Spec2Proof",
+  "version": 1,
+  "tags": {
+    "agentcore:created-by": "agentcore-cli",
+    "agentcore:project-name": "Spec2Proof",
+    "Project": "Spec2Proof"
+  },
+  "runtimes": [
+    {
+      "name": "Spec2ProofRuntime",
+      "build": "Container",
+      "entrypoint": "dist/apps/agent-runtime.js",
+      "codeLocation": ".",
+      "buildContextPath": ".",
+      "runtimeVersion": "NODE_22",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP",
+      "authorizerType": "AWS_IAM",
+      "instrumentation": {
+        "enableOtel": true
+      },
+      "envVars": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "AWS_REGION", "value": "us-west-2" },
+        { "name": "SPEC2PROOF_MODEL_ID", "value": "global.anthropic.claude-sonnet-4-6" },
+        { "name": "SPEC2PROOF_ALLOWED_HOSTS", "value": "pxf77.github.io" },
+        { "name": "SPEC2PROOF_BROWSER_PROVIDER", "value": "agentcore" },
+        { "name": "SPEC2PROOF_AGENTCORE_BROWSER_ID", "value": "aws.browser.v1" },
+        { "name": "SPEC2PROOF_EVIDENCE_STORE", "value": "s3" },
+        { "name": "SPEC2PROOF_EVIDENCE_BUCKET", "value": "replace-with-foundation-output" },
+        { "name": "SPEC2PROOF_EVIDENCE_PREFIX", "value": "spec2proof" },
+        { "name": "SPEC2PROOF_MAX_AGENT_TURNS", "value": "40" }
+      ]
+    }
+  ],
+  "memories": [],
+  "credentials": [],
+  "payments": [],
+  "evaluators": [],
+  "onlineEvalConfigs": [],
+  "agentCoreGateways": [],
+  "policyEngines": []
+}

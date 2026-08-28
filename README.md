@@ -4,35 +4,41 @@
 
 ## Current status
 
-The repository contains the first end-to-end GitHub App integration slice:
+The repository now contains a deployable Stage 3 architecture:
 
-- GitHub App JWT creation and Installation Token caching;
-- authenticated, deduplicated webhook ingress;
-- real PR metadata plus bounded changed-file patch context retrieval;
+- GitHub App JWT and Installation Token authentication;
+- webhook HMAC verification and persistent delivery deduplication;
+- FIFO webhook queueing grouped by repository and pull request;
+- persistent DynamoDB run storage;
+- real PR metadata and bounded changed-file context;
 - structured acceptance-spec parsing from the PR description;
-- Strands planning invocation;
-- human plan approval through PR commands;
-- AgentCore-compatible runtime invocation;
-- one updatable PR summary comment and one Check Run per run;
-- reviewer permission enforcement;
-- stale-run cancellation after a new PR head commit;
-- failed/blocked criterion rerun planning on the same head SHA.
+- Strands planning plus reviewer approval;
+- AWS SDK invocation of AgentCore Runtime;
+- managed AgentCore Browser adapter;
+- S3 evidence storage;
+- one updatable PR summary and one Check Run per acceptance run;
+- GitHub App manifest setup that stores generated credentials directly in Secrets Manager;
+- a deterministic DemoShop target with Playwright E2E coverage;
+- AWS SAM and AgentCore deployment assets.
 
-The run store and delivery deduplication store are currently in-memory. Durable AWS storage and managed AgentCore Browser are the next infrastructure slices.
+Account-bound AWS provisioning and GitHub App installation are performed with the deployment runbook; credentials and generated deployment state are not committed.
 
 ## Core workflow
 
 ```text
-GitHub Pull Request
-→ /spec2proof run
-→ GitHub App reads PR + structured acceptance criteria
-→ Strands creates an execution plan
-→ Check Run queued + plan comment
-→ /spec2proof approve
-→ reviewer permission and current Head SHA verified
-→ AgentCore-compatible runtime executes the approved plan
-→ deterministic assertions and evidence
-→ Check Run completed + result comment
+GitHub Pull Request comment
+→ authenticated webhook Lambda
+→ delivery TTL check
+→ per-PR FIFO queue
+→ GitHub worker
+→ explicit acceptance criteria + bounded diff context
+→ Strands execution plan
+→ human approval
+→ AgentCore Runtime
+→ AgentCore Browser
+→ deterministic assertions + S3 evidence
+→ DynamoDB run result
+→ GitHub Check + singleton PR summary
 → human merge decision
 ```
 
@@ -40,119 +46,108 @@ GitHub Pull Request
 
 ```text
 src/
-├── apps/              # webhook and AgentCore-compatible runtime entrypoints
+├── apps/              # local servers, Lambda handlers, AgentCore runtime
 ├── domain/            # acceptance/run models and verdict rules
 ├── application/       # thin use-case orchestration and ports
 ├── agent/             # Strands prompts, schemas, approved-plan guard, tools
-├── adapters/          # in-memory, runtime HTTP, local file, Playwright
-├── github/            # App auth, API client, PR source, dispatcher, publisher
+├── adapters/          # local Playwright and managed AgentCore Browser
+├── aws/               # DynamoDB, SQS, S3, Secrets Manager, AgentCore SDK
+├── github/            # App auth, PR source, dispatcher, Check/comment publisher
+├── webhook/           # authenticated ingress and queued message contract
 ├── security/          # URL allowlist and SSRF guardrails
-├── config/            # validated runtime configuration
+├── config/            # validated local and AWS environment configuration
 └── observability/     # structured redacted logging
 ```
 
-The project intentionally remains one TypeScript package with two deployment entrypoints. It does not use a multi-agent graph or a complex workflow state machine.
+The project remains one TypeScript package. Planning and execution are separate invocations only because a human approval boundary exists between them. There is no multi-agent graph or expanded workflow state machine.
 
 ## Requirements
 
 - Node.js 22+
 - npm
-- a GitHub App
 - AWS credentials and Bedrock model access for live planning/execution
-- Chromium installed by Playwright for the runtime
+- AWS SAM CLI and AgentCore CLI for deployment
+- Playwright Chromium for DemoShop E2E verification
 
-## Install
+## Install and verify
 
 ```bash
 npm install
 cp .env.example .env
 npm run check
 npx playwright install chromium
+npm run check:e2e
 ```
 
-## GitHub App configuration
+## Local development
 
-Configure the GitHub App with the following repository permissions:
-
-| Permission | Level | Purpose |
-|---|---|---|
-| Metadata | Read | Repository identity |
-| Pull requests | Read | PR metadata and changed files |
-| Issues | Write | Create/update the PR conversation comment |
-| Checks | Write | Create/update the Spec2Proof Check Run |
-
-Subscribe to these webhook events:
-
-- Issue comment
-- Pull request
-
-Set the webhook URL to:
-
-```text
-POST https://<host>/webhooks/github
-```
-
-The service validates `X-Hub-Signature-256`, deduplicates `X-GitHub-Delivery`, and acknowledges accepted deliveries before model or runtime work begins.
-
-## Environment
-
-Webhook process:
+Deterministic lifecycle demo:
 
 ```bash
-export GITHUB_WEBHOOK_SECRET='replace-with-a-long-random-secret'
-export GITHUB_APP_ID='123456'
-export GITHUB_PRIVATE_KEY='-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----'
-export SPEC2PROOF_AGENT_RUNTIME_URL='http://127.0.0.1:8080/invocations'
+npm run dev:demo
+```
+
+DemoShop:
+
+```bash
+npm run dev:demo-shop
+```
+
+Local webhook and runtime:
+
+```bash
+npm run dev:runtime
 npm run dev:webhook
 ```
 
-Agent runtime:
+## Deploy
 
-```bash
-export SPEC2PROOF_ALLOWED_HOSTS='staging.example.com,api-staging.example.com'
-npm run dev:runtime
-```
+Follow the complete runbook:
 
-Health endpoints:
+- [AWS, AgentCore, and GitHub App deployment](docs/deployment/aws-and-github-app.md)
 
-```text
-GET /healthz   # webhook service
-GET /ping      # AgentCore-compatible runtime
-```
+Deployment is split into two explicit stacks:
+
+1. `deploy/aws/foundation.yaml` creates the private evidence bucket and AgentCore execution role.
+2. `deploy/aws/template.yaml` creates the GitHub webhook/control plane after the AgentCore Runtime ARN is known.
+
+The GitHub App setup endpoint uses GitHub's manifest flow and requests only Checks write, Contents read, Issues write, and Pull requests read. The callback writes the generated App ID, PEM, and webhook secret directly to Secrets Manager.
+
+## DemoShop
+
+`demo-shop/` is a static deterministic application for the public demonstration:
+
+- `SAVE20` reduces `100.00` to `80.00`;
+- `EXPIRED20` returns `Coupon expired` and keeps `100.00`;
+- synthetic checkout reaches `#/order/success`;
+- `?fault=expired-coupon` deliberately exposes a defect for the failure demo.
+
+Run `DemoShop E2E` in Actions for browser verification. After GitHub Pages is enabled, manually run `Deploy DemoShop to GitHub Pages`.
+
+Prepared acceptance criteria:
+
+- [Demo PR body](docs/demo/pr-body.md)
 
 ## PR acceptance format
 
-Spec2Proof fails closed when a PR does not contain a structured YAML block.
+Spec2Proof fails closed when the PR does not contain a structured YAML block.
 
 ```yaml
 spec2proof:
   target:
-    environment: staging
-    base_url: https://staging.example.com
+    environment: demo
+    base_url: https://pxf77.github.io/Spec2Proof/
   criteria:
     - id: AC-001
-      description: Valid users reach the dashboard
+      description: SAVE20 reduces the order total to 80.00
       preconditions:
-        - A synthetic active user exists
+        - DemoShop is open
       automation_class: AUTO
       expected:
-        - type: url
-          matches: /dashboard
-          mode: prefix
-
-    - id: AC-002
-      description: Dashboard heading is visible
-      expected:
-        - type: element
-          selector_hint: Dashboard heading
-          visible: true
-
-    - id: AC-003
-      description: Reviewer confirms the visual brand treatment
-      automation_class: HUMAN
-      expected:
-        - type: human
-          reason: Subjective visual review
+        - type: text
+          selector: '[data-testid="order-total"]'
+          value: "80.00"
+          mode: exact
 ```
 
 Supported deterministic outcomes:
@@ -186,37 +181,25 @@ approved criterion / step / assertion IDs
 → evidence store-issued ID
 → invocation-local evidence ledger
 → enforced criterion result
-→ run verdict
+→ persisted run verdict
 → GitHub Check conclusion
 ```
 
-The model cannot supply a replacement expected value or an arbitrary evidence ID to obtain `PASS`. Unknown, blocked, or unverified behavior becomes `NEEDS_HUMAN` or `INCONCLUSIVE`.
-
-## Local deterministic demo
-
-This exercises the domain lifecycle without GitHub, AWS, or a browser:
-
-```bash
-npm run dev:demo
-```
+The model cannot supply a replacement expected value or arbitrary evidence ID to obtain PASS. Unknown, blocked, or unverified behavior becomes `NEEDS_HUMAN` or `INCONCLUSIVE`.
 
 ## Verification
 
 ```bash
-npm run typecheck
-npm test
-npm run build
-# or
-npm run check
+npm run check       # strict typecheck, unit tests, build, deployment template checks
+npm run check:e2e   # DemoShop browser tests
 ```
-
-CI runs the same `npm run check` command for pushes and pull requests.
 
 ## Documentation
 
 - [Requirements SPEC v1.0](docs/specs/spec2proof-pr-acceptance-agent-spec-v1.0.md)
 - [Initial architecture](docs/architecture/initial-architecture.md)
 - [GitHub integration architecture](docs/architecture/github-integration.md)
+- [AWS and GitHub App deployment](docs/deployment/aws-and-github-app.md)
 - [Agent development rules](AGENTS.md)
 
 ## Explicit non-goals

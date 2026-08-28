@@ -1,0 +1,312 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Spec2Proof GitHub App control plane.
+
+Parameters:
+  AgentRuntimeArn:
+    Type: String
+    Description: ARN returned by the deployed Spec2Proof AgentCore Runtime.
+  AgentRuntimeQualifier:
+    Type: String
+    Default: DEFAULT
+  ModelId:
+    Type: String
+    Default: global.anthropic.claude-sonnet-4-6
+  SetupToken:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Temporary administrator token for the GitHub App manifest setup page.
+  GitHubApiUrl:
+    Type: String
+    Default: https://api.github.com
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    Tracing: Active
+    Environment:
+      Variables:
+        NODE_ENV: production
+        LOG_LEVEL: info
+
+Resources:
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      CorsConfiguration:
+        AllowMethods: [GET, POST]
+        AllowOrigins: ["https://github.com"]
+
+  GitHubAppCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: GitHub App ID, private key, and webhook secret created by the manifest flow.
+      SecretString: '{"status":"unconfigured"}'
+
+  RunsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: runId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: runId
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  DeliveriesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: deliveryId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: deliveryId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  WebhookDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      QueueName: !Sub ${AWS::StackName}-webhook-dlq.fifo
+      MessageRetentionPeriod: 1209600
+
+  WebhookQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      QueueName: !Sub ${AWS::StackName}-webhook.fifo
+      VisibilityTimeout: 960
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt WebhookDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  ExecutionDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      QueueName: !Sub ${AWS::StackName}-execution-dlq.fifo
+      MessageRetentionPeriod: 1209600
+
+  ExecutionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      QueueName: !Sub ${AWS::StackName}-execution.fifo
+      VisibilityTimeout: 960
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ExecutionDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  WebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../../
+      Handler: src/apps/webhook-lambda.handler
+      MemorySize: 512
+      Timeout: 15
+      Environment:
+        Variables:
+          GITHUB_APP_SECRET_ARN: !Ref GitHubAppCredentialsSecret
+          SPEC2PROOF_DELIVERY_TABLE: !Ref DeliveriesTable
+          SPEC2PROOF_WEBHOOK_QUEUE_URL: !Ref WebhookQueue
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref GitHubAppCredentialsSecret
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt DeliveriesTable.Arn
+            - Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !GetAtt WebhookQueue.Arn
+      Events:
+        Health:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /healthz
+            Method: GET
+        Webhook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /webhooks/github
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/apps/webhook-lambda.ts]
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+
+  GitHubAppSetupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../../
+      Handler: src/apps/github-app-setup-lambda.handler
+      MemorySize: 256
+      Timeout: 30
+      Environment:
+        Variables:
+          GITHUB_APP_SECRET_ARN: !Ref GitHubAppCredentialsSecret
+          SPEC2PROOF_SETUP_TOKEN: !Ref SetupToken
+          SPEC2PROOF_PUBLIC_BASE_URL: !Sub https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+          GITHUB_API_URL: !Ref GitHubApiUrl
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+                - secretsmanager:PutSecretValue
+              Resource: !Ref GitHubAppCredentialsSecret
+      Events:
+        Setup:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /setup/github-app
+            Method: GET
+        Callback:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /setup/github-app/callback
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/apps/github-app-setup-lambda.ts]
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+
+  GitHubWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../../
+      Handler: src/apps/github-worker.handler
+      MemorySize: 2048
+      Timeout: 900
+      ReservedConcurrentExecutions: 10
+      Environment:
+        Variables:
+          GITHUB_APP_SECRET_ARN: !Ref GitHubAppCredentialsSecret
+          GITHUB_API_URL: !Ref GitHubApiUrl
+          SPEC2PROOF_RUNS_TABLE: !Ref RunsTable
+          SPEC2PROOF_EXECUTION_QUEUE_URL: !Ref ExecutionQueue
+          SPEC2PROOF_MODEL_ID: !Ref ModelId
+          SPEC2PROOF_MAX_CHANGED_FILES: 100
+          SPEC2PROOF_MAX_PATCH_CHARS_PER_FILE: 4000
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref GitHubAppCredentialsSecret
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:TransactWriteItems
+              Resource: !GetAtt RunsTable.Arn
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource: "*"
+            - Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !GetAtt ExecutionQueue.Arn
+      Events:
+        WebhookMessages:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt WebhookQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes: [ReportBatchItemFailures]
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/apps/github-worker.ts]
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+
+  RunExecutionWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../../
+      Handler: src/apps/run-execution-worker.handler
+      MemorySize: 2048
+      Timeout: 900
+      ReservedConcurrentExecutions: 10
+      Environment:
+        Variables:
+          GITHUB_APP_SECRET_ARN: !Ref GitHubAppCredentialsSecret
+          GITHUB_API_URL: !Ref GitHubApiUrl
+          SPEC2PROOF_RUNS_TABLE: !Ref RunsTable
+          SPEC2PROOF_AGENT_RUNTIME_ARN: !Ref AgentRuntimeArn
+          SPEC2PROOF_AGENT_RUNTIME_QUALIFIER: !Ref AgentRuntimeQualifier
+          SPEC2PROOF_AGENT_RUNTIME_TIMEOUT_SECONDS: 840
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref GitHubAppCredentialsSecret
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource: !GetAtt RunsTable.Arn
+            - Effect: Allow
+              Action: bedrock-agentcore:InvokeAgentRuntime
+              Resource: !Ref AgentRuntimeArn
+      Events:
+        RunExecutions:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ExecutionQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes: [ReportBatchItemFailures]
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/apps/run-execution-worker.ts]
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+
+Outputs:
+  PublicBaseUrl:
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+  WebhookUrl:
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/webhooks/github
+  SetupUrlTemplate:
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/setup/github-app?token=REPLACE_WITH_SETUP_TOKEN
+  GitHubAppCredentialsSecretArn:
+    Value: !Ref GitHubAppCredentialsSecret
+  RunsTableName:
+    Value: !Ref RunsTable
+  ExecutionQueueUrl:
+    Value: !Ref ExecutionQueue

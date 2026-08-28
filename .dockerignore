@@ -9,4 +9,11 @@ playwright-report
 test-results
 .env
 .env.*
-!.env.example
+docs
+test
+e2e
+demo-shop
+deploy
+scripts
+agentcore/.cli
+agentcore/aws-targets.json
