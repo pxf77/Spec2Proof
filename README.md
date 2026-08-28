@@ -4,7 +4,7 @@
 
 ## Current status
 
-The repository contains the verified Stage 3 architecture:
+The repository contains the verified Stage 3 runtime architecture and the Stage 4 deployment path:
 
 - GitHub App JWT and Installation Token authentication;
 - webhook HMAC verification and persistent delivery deduplication;
@@ -22,9 +22,10 @@ The repository contains the verified Stage 3 architecture:
 - one updatable PR summary and one Check Run per acceptance run;
 - GitHub App manifest setup that stores generated credentials directly in Secrets Manager;
 - a deterministic DemoShop target with Playwright E2E coverage;
-- AWS SAM and AgentCore deployment assets.
+- AWS SAM and AgentCore deployment assets;
+- a manual GitHub OIDC deployment workflow with pinned actions and no long-lived AWS keys.
 
-Account-bound AWS provisioning, GitHub Pages enablement, and GitHub App installation are performed with the deployment runbook. Credentials and generated deployment state are not committed.
+Account-bound AWS authorization, GitHub Pages enablement, and GitHub App installation remain explicit operator actions. Credentials and generated deployment state are not committed.
 
 ## Core workflow
 
@@ -60,6 +61,7 @@ src/
 ├── agent/             # Strands prompts, schemas, approved-plan guard, tools
 ├── adapters/          # local execution, Playwright, scheduling adapters
 ├── aws/               # DynamoDB, SQS, S3, Secrets Manager, AgentCore SDK
+├── deployment/        # fail-closed deployment-state parsing
 ├── execution/         # durable execution-message contract
 ├── github/            # App auth, PR source, dispatcher, Check/comment publisher
 ├── webhook/           # authenticated ingress and queued webhook contract
@@ -74,8 +76,9 @@ The project remains one TypeScript package. Planning and execution are separate 
 
 - Node.js 22+
 - npm
-- AWS credentials and Bedrock model access for live planning/execution
-- AWS SAM CLI and AgentCore CLI for deployment
+- AWS credentials and Bedrock model access for local live planning/execution
+- AWS SAM CLI and AgentCore CLI for direct deployment
+- an AWS OIDC deployment role for GitHub Actions deployment
 - Playwright Chromium for DemoShop E2E verification
 
 ## Install and verify
@@ -113,9 +116,15 @@ The local webhook uses direct in-process execution. The deployed AWS control pla
 
 ## Deploy
 
-Follow the complete runbook:
+Direct operator deployment:
 
 - [AWS, AgentCore, and GitHub App deployment](docs/deployment/aws-and-github-app.md)
+
+GitHub Actions deployment with temporary AWS credentials:
+
+- [GitHub Actions OIDC deployment](docs/deployment/github-actions-oidc.md)
+
+The OIDC workflow is manual-only, accepts only a confirmed non-production host allowlist, runs only from `main`, pins all actions to commit SHAs, and reads the AWS role ARN from `AWS_DEPLOY_ROLE_ARN`. It does not use `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY`.
 
 Deployment is split into two explicit stacks:
 
@@ -203,7 +212,7 @@ The model cannot supply a replacement expected value or arbitrary evidence ID to
 ## Verification
 
 ```bash
-npm run check       # strict typecheck, unit tests, build, deployment topology checks
+npm run check       # strict typecheck, unit tests, build, deployment topology and OIDC workflow checks
 npm run check:e2e   # DemoShop browser tests
 ```
 
@@ -213,7 +222,9 @@ npm run check:e2e   # DemoShop browser tests
 - [Initial architecture](docs/architecture/initial-architecture.md)
 - [GitHub integration architecture](docs/architecture/github-integration.md)
 - [AWS and GitHub App deployment](docs/deployment/aws-and-github-app.md)
+- [GitHub Actions OIDC deployment](docs/deployment/github-actions-oidc.md)
 - [Stage 3 verified completion](docs/implementation/stage-3-complete.md)
+- [Stage 4 OIDC deployment automation](docs/implementation/stage-4-oidc-deployment.md)
 - [Agent development rules](AGENTS.md)
 
 ## Explicit non-goals

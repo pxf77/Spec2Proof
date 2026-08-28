@@ -1,6 +1,8 @@
 .git
 .github
 node_modules
+.deployment-tools
+.aws-sam
 dist
 coverage
 artifacts

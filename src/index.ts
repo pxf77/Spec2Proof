@@ -5,6 +5,7 @@ export * from "./application/run-service.js";
 export * from "./agent/execution-ledger.js";
 export * from "./agent/strands-plan-generator.js";
 export * from "./agent/strands-run-executor.js";
+export * from "./deployment/agentcore-state.js";
 export * from "./security/url-policy.js";
 export * from "./webhook/ingress.js";
 export * from "./webhook/message.js";

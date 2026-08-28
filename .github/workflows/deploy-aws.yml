@@ -1,0 +1,342 @@
+name: Deploy Spec2Proof to AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Confirm this is a non-production deployment
+        type: choice
+        options:
+          - CANCEL
+          - DEPLOY_NON_PRODUCTION
+        default: CANCEL
+        required: true
+      aws_region:
+        description: AWS region for the stacks and AgentCore Runtime
+        type: string
+        default: us-west-2
+        required: true
+      allowed_hosts:
+        description: Comma-separated non-production browser host allowlist
+        type: string
+        default: pxf77.github.io
+        required: true
+      model_id:
+        description: Bedrock model or inference profile ID
+        type: string
+        default: global.anthropic.claude-sonnet-4-6
+        required: true
+      foundation_stack:
+        description: CloudFormation stack for evidence and runtime IAM
+        type: string
+        default: spec2proof-foundation
+        required: true
+      control_plane_stack:
+        description: CloudFormation stack for the GitHub App control plane
+        type: string
+        default: spec2proof-control-plane
+        required: true
+      evidence_retention_days:
+        description: S3 evidence retention in days
+        type: number
+        default: 30
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: spec2proof-aws-deployment
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'DEPLOY_NON_PRODUCTION'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      AGENTCORE_CLI_VERSION: 0.28.1
+
+    steps:
+      - name: Checkout the verified main branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Set up AWS SAM CLI for an unprivileged build
+        uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
+
+      - name: Validate non-production inputs
+        shell: bash
+        env:
+          ALLOWED_HOSTS: ${{ inputs.allowed_hosts }}
+        run: |
+          set -euo pipefail
+          if [[ "$ALLOWED_HOSTS" == *"://"* || "$ALLOWED_HOSTS" == *"/"* ]]; then
+            echo "allowed_hosts must contain hostnames only, not URLs or paths." >&2
+            exit 1
+          fi
+          if [[ "$ALLOWED_HOSTS" == *"localhost"* || "$ALLOWED_HOSTS" == *"127.0.0.1"* ]]; then
+            echo "The managed runtime deployment cannot target local hosts." >&2
+            exit 1
+          fi
+
+      - name: Verify and build without OIDC permission
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install
+          npm run check
+          npm install \
+            --prefix .deployment-tools \
+            --no-save \
+            "@aws/agentcore@${AGENTCORE_CLI_VERSION}"
+          .deployment-tools/node_modules/.bin/agentcore --version
+          sam build --template-file deploy/aws/template.yaml
+          test -f .aws-sam/build/template.yaml
+          test -f dist/deployment/agentcore-state.js
+
+      - name: Package the verified deployment bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          tar \
+            --exclude='./.git' \
+            --exclude='./node_modules' \
+            --exclude='./artifacts' \
+            --exclude='./coverage' \
+            --exclude='./test' \
+            --exclude='./e2e' \
+            --exclude='./demo-shop' \
+            --exclude='./playwright-report' \
+            --exclude='./test-results' \
+            -czf artifacts/spec2proof-deploy.tgz .
+          if tar -tzf artifacts/spec2proof-deploy.tgz | grep -q '^\./node_modules/'; then
+            echo "Project node_modules must not enter the privileged deployment bundle." >&2
+            exit 1
+          fi
+
+      - name: Upload the verified deployment bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: spec2proof-deployment-${{ github.sha }}
+          path: artifacts/spec2proof-deploy.tgz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  deploy:
+    needs: prepare
+    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'DEPLOY_NON_PRODUCTION'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ inputs.aws_region }}
+      AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
+      FOUNDATION_STACK: ${{ inputs.foundation_stack }}
+      CONTROL_PLANE_STACK: ${{ inputs.control_plane_stack }}
+      ALLOWED_HOSTS: ${{ inputs.allowed_hosts }}
+      MODEL_ID: ${{ inputs.model_id }}
+      EVIDENCE_RETENTION_DAYS: ${{ inputs.evidence_retention_days }}
+      DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+
+    steps:
+      - name: Download the verified deployment bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: spec2proof-deployment-${{ github.sha }}
+          path: /tmp/spec2proof-deployment
+
+      - name: Extract and verify the deployment bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xzf /tmp/spec2proof-deployment/spec2proof-deploy.tgz -C "$GITHUB_WORKSPACE"
+          test -x .deployment-tools/node_modules/.bin/agentcore
+          test -f .aws-sam/build/template.yaml
+          test -f dist/deployment/agentcore-state.js
+          echo "$GITHUB_WORKSPACE/.deployment-tools/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Set up AWS SAM CLI
+        uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
+
+      - name: Validate protected deployment inputs
+        shell: bash
+        env:
+          SPEC2PROOF_SETUP_TOKEN: ${{ secrets.SPEC2PROOF_SETUP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DEPLOY_ROLE_ARN" ]]; then
+            echo "Repository variable AWS_DEPLOY_ROLE_ARN is required." >&2
+            exit 1
+          fi
+          if [[ -z "$SPEC2PROOF_SETUP_TOKEN" || ${#SPEC2PROOF_SETUP_TOKEN} -lt 24 ]]; then
+            echo "Repository secret SPEC2PROOF_SETUP_TOKEN must contain at least 24 characters." >&2
+            exit 1
+          fi
+          if [[ "$ALLOWED_HOSTS" == *"://"* || "$ALLOWED_HOSTS" == *"/"* ]]; then
+            echo "allowed_hosts must contain hostnames only, not URLs or paths." >&2
+            exit 1
+          fi
+          if [[ "$ALLOWED_HOSTS" == *"localhost"* || "$ALLOWED_HOSTS" == *"127.0.0.1"* ]]; then
+            echo "The managed runtime deployment cannot target local hosts." >&2
+            exit 1
+          fi
+
+      - name: Configure temporary AWS credentials with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: Spec2ProofDeploy-${{ github.run_id }}
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          if [[ ! "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "AWS identity did not return a 12-digit account ID." >&2
+            exit 1
+          fi
+          echo "AWS_ACCOUNT_ID=$ACCOUNT_ID" >> "$GITHUB_ENV"
+          echo "Authenticated to the configured AWS deployment role."
+
+      - name: Deploy evidence foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          sam deploy \
+            --template-file deploy/aws/foundation.yaml \
+            --stack-name "$FOUNDATION_STACK" \
+            --region "$AWS_REGION" \
+            --resolve-s3 \
+            --capabilities CAPABILITY_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides EvidenceRetentionDays="$EVIDENCE_RETENTION_DAYS" \
+            --tags Project=Spec2Proof ManagedBy=GitHubActions
+
+      - name: Read foundation outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_output() {
+            aws cloudformation describe-stacks \
+              --stack-name "$FOUNDATION_STACK" \
+              --region "$AWS_REGION" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" \
+              --output text
+          }
+          EVIDENCE_BUCKET=$(read_output EvidenceBucketName)
+          RUNTIME_ROLE_ARN=$(read_output RuntimeExecutionRoleArn)
+          if [[ -z "$EVIDENCE_BUCKET" || "$EVIDENCE_BUCKET" == "None" ]]; then
+            echo "EvidenceBucketName output is missing." >&2
+            exit 1
+          fi
+          if [[ -z "$RUNTIME_ROLE_ARN" || "$RUNTIME_ROLE_ARN" == "None" ]]; then
+            echo "RuntimeExecutionRoleArn output is missing." >&2
+            exit 1
+          fi
+          echo "SPEC2PROOF_EVIDENCE_BUCKET=$EVIDENCE_BUCKET" >> "$GITHUB_ENV"
+          echo "SPEC2PROOF_AGENTCORE_EXECUTION_ROLE_ARN=$RUNTIME_ROLE_ARN" >> "$GITHUB_ENV"
+
+      - name: Prepare AgentCore deployment
+        shell: bash
+        env:
+          SPEC2PROOF_SKIP_REPOSITORY_CHECK: "true"
+        run: |
+          set -euo pipefail
+          export SPEC2PROOF_ALLOWED_HOSTS="$ALLOWED_HOSTS"
+          export SPEC2PROOF_MODEL_ID="$MODEL_ID"
+          node scripts/bootstrap-agentcore.mjs
+
+      - name: Deploy AgentCore Runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          agentcore deploy --target default --yes --json > /tmp/agentcore-deploy.json
+          STATUS=$?
+          set -e
+          if [[ $STATUS -ne 0 && $STATUS -ne 2 ]]; then
+            echo "AgentCore deployment failed with exit code $STATUS." >&2
+            cat /tmp/agentcore-deploy.json >&2 || true
+            exit "$STATUS"
+          fi
+          if [[ $STATUS -eq 2 ]]; then
+            echo "AgentCore deployment completed with post-deployment warnings." >&2
+          fi
+          RUNTIME_ARN=$(node scripts/read-agentcore-runtime-arn.mjs)
+          echo "SPEC2PROOF_AGENT_RUNTIME_ARN=$RUNTIME_ARN" >> "$GITHUB_ENV"
+
+      - name: Deploy GitHub App control plane
+        shell: bash
+        env:
+          SPEC2PROOF_SETUP_TOKEN: ${{ secrets.SPEC2PROOF_SETUP_TOKEN }}
+        run: |
+          set -euo pipefail
+          sam deploy \
+            --template-file .aws-sam/build/template.yaml \
+            --stack-name "$CONTROL_PLANE_STACK" \
+            --region "$AWS_REGION" \
+            --resolve-s3 \
+            --capabilities CAPABILITY_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              AgentRuntimeArn="$SPEC2PROOF_AGENT_RUNTIME_ARN" \
+              AgentRuntimeQualifier=DEFAULT \
+              ModelId="$MODEL_ID" \
+              SetupToken="$SPEC2PROOF_SETUP_TOKEN" \
+              GitHubApiUrl=https://api.github.com \
+            --tags Project=Spec2Proof ManagedBy=GitHubActions
+
+      - name: Publish non-secret deployment outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_output() {
+            aws cloudformation describe-stacks \
+              --stack-name "$CONTROL_PLANE_STACK" \
+              --region "$AWS_REGION" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" \
+              --output text
+          }
+          PUBLIC_BASE_URL=$(read_output PublicBaseUrl)
+          WEBHOOK_URL=$(read_output WebhookUrl)
+          SETUP_URL_TEMPLATE=$(read_output SetupUrlTemplate)
+          {
+            echo "## Spec2Proof AWS deployment"
+            echo
+            echo "| Output | Value |"
+            echo "|---|---|"
+            echo "| Region | \`$AWS_REGION\` |"
+            echo "| Foundation stack | \`$FOUNDATION_STACK\` |"
+            echo "| Control-plane stack | \`$CONTROL_PLANE_STACK\` |"
+            echo "| Public base URL | \`$PUBLIC_BASE_URL\` |"
+            echo "| Webhook URL | \`$WEBHOOK_URL\` |"
+            echo "| AgentCore Runtime ARN | \`$SPEC2PROOF_AGENT_RUNTIME_ARN\` |"
+            echo
+            echo "GitHub App setup URL template: \`$SETUP_URL_TEMPLATE\`"
+            echo
+            echo "Replace the placeholder locally with the protected \`SPEC2PROOF_SETUP_TOKEN\`. The token is never printed by this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
