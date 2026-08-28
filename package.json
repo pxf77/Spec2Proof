@@ -1,6 +1,6 @@
 {
   "name": "spec2proof",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "PR acceptance execution agent built with Strands Agents and Amazon Bedrock AgentCore.",
   "type": "module",
@@ -17,6 +17,7 @@
     "validate:deploy": "node scripts/validate-deployment.mjs",
     "check": "npm run typecheck && npm test && npm run build && npm run validate:deploy",
     "check:e2e": "npm run typecheck:e2e && npm run test:e2e",
+    "read:agentcore-runtime-arn": "node scripts/read-agentcore-runtime-arn.mjs",
     "dev:demo": "tsx src/apps/local-demo.ts",
     "dev:demo-shop": "node scripts/serve-demo-shop.mjs",
     "dev:webhook": "tsx watch src/apps/webhook.ts",
