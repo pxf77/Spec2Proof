@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { RunService } from "../application/run-service.js";
-import type { PullRequestReader, ReviewerAuthorizer } from "../application/ports.js";
+import type {
+  PullRequestReader,
+  ReviewerAuthorizer,
+  RunExecutionScheduler,
+} from "../application/ports.js";
 import type { Logger } from "../observability/logger.js";
 import { parseSpec2ProofCommand, type Spec2ProofCommand } from "./webhook.js";
 import type {
@@ -42,6 +46,7 @@ const pullRequestEventSchema = z.object({
 
 export interface GitHubWebhookDispatcherDependencies {
   runService: RunService;
+  executionScheduler: RunExecutionScheduler;
   pullRequests: PullRequestReader;
   authorizer: ReviewerAuthorizer;
   clients: GitHubInstallationClientFactory;
@@ -196,7 +201,7 @@ export class GitHubWebhookDispatcher {
       context.actor,
       currentHeadSha,
     );
-    await this.dependencies.runService.executeRun(approved.runId);
+    await this.dependencies.executionScheduler.schedule(approved.runId);
   }
 
   private async handleReject(

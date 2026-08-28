@@ -27,7 +27,7 @@ interface LatestRunPointer {
 export class DynamoDbRunStore implements RunStore {
   public constructor(
     private readonly tableName: string,
-    private readonly client = DynamoDBDocumentClient.from(new DynamoDBClient({})),
+    private readonly client = createDocumentClient(),
   ) {}
 
   public async get(runId: string): Promise<AcceptanceRun | undefined> {
@@ -99,6 +99,12 @@ export class DynamoDbRunStore implements RunStore {
       throw error;
     }
   }
+}
+
+function createDocumentClient(): DynamoDBDocumentClient {
+  return DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+    marshallOptions: { removeUndefinedValues: true },
+  });
 }
 
 function toRunItem(run: AcceptanceRun): RunItem {

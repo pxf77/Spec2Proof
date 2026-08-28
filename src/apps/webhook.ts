@@ -8,6 +8,7 @@ import {
   RandomIdGenerator,
   SystemClock,
 } from "../adapters/memory.js";
+import { DirectRunExecutionScheduler } from "../adapters/run-execution-scheduler.js";
 import { StrandsPlanGenerator } from "../agent/strands-plan-generator.js";
 import { PLANNING_SYSTEM_PROMPT } from "../agent/system-prompt.js";
 import { loadWebhookEnvironment } from "../config/env.js";
@@ -64,6 +65,7 @@ export function startWebhookServer(): void {
   });
   const dispatcher = new GitHubWebhookDispatcher({
     runService,
+    executionScheduler: new DirectRunExecutionScheduler(runService),
     pullRequests: new GitHubPullRequestReader(
       clients,
       environment.SPEC2PROOF_MAX_CHANGED_FILES,

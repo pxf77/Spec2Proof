@@ -1,13 +1,14 @@
 import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
 import { Agent, BedrockModel } from "@strands-agents/sdk";
 import { RunService } from "../application/run-service.js";
-import { AgentCoreRunExecutor } from "../aws/agentcore-run-executor.js";
+import { DeferredRunExecutor } from "../adapters/deferred-run-executor.js";
 import { DynamoDbRunStore } from "../aws/dynamo-run-store.js";
 import { SecretsManagerGitHubAppCredentials } from "../aws/github-app-secret.js";
+import { SqsRunExecutionScheduler } from "../aws/sqs-run-execution-scheduler.js";
 import { RandomIdGenerator, SystemClock } from "../adapters/memory.js";
 import { StrandsPlanGenerator } from "../agent/strands-plan-generator.js";
 import { PLANNING_SYSTEM_PROMPT } from "../agent/system-prompt.js";
-import { loadAwsWorkerEnvironment } from "../config/env.js";
+import { loadAwsCommandWorkerEnvironment } from "../config/env.js";
 import {
   GitHubAppTokenProvider,
   GitHubClientFactory,
@@ -21,7 +22,7 @@ import { GitHubRunPublisher } from "../github/publisher.js";
 import { createLogger } from "../observability/logger.js";
 import { githubWebhookMessageSchema } from "../webhook/message.js";
 
-const environment = loadAwsWorkerEnvironment();
+const environment = loadAwsCommandWorkerEnvironment();
 const logger = createLogger(environment.LOG_LEVEL);
 const credentials = new SecretsManagerGitHubAppCredentials(
   environment.GITHUB_APP_SECRET_ARN,
@@ -70,11 +71,7 @@ async function createDispatcher(): Promise<GitHubWebhookDispatcher> {
         printer: false,
       }),
     ),
-    executor: new AgentCoreRunExecutor({
-      agentRuntimeArn: environment.SPEC2PROOF_AGENT_RUNTIME_ARN,
-      qualifier: environment.SPEC2PROOF_AGENT_RUNTIME_QUALIFIER,
-      timeoutMs: environment.SPEC2PROOF_AGENT_RUNTIME_TIMEOUT_SECONDS * 1_000,
-    }),
+    executor: new DeferredRunExecutor(),
     store: new DynamoDbRunStore(environment.SPEC2PROOF_RUNS_TABLE),
     publisher,
     clock: new SystemClock(),
@@ -83,6 +80,9 @@ async function createDispatcher(): Promise<GitHubWebhookDispatcher> {
 
   return new GitHubWebhookDispatcher({
     runService: service,
+    executionScheduler: new SqsRunExecutionScheduler(
+      environment.SPEC2PROOF_EXECUTION_QUEUE_URL,
+    ),
     pullRequests: new GitHubPullRequestReader(
       clients,
       environment.SPEC2PROOF_MAX_CHANGED_FILES,

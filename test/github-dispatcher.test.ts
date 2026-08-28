@@ -5,9 +5,8 @@ import type {
   PullRequestReader,
   ReviewerAuthorizer,
 } from "../src/application/ports.js";
-import {
-  InMemoryRunStore,
-} from "../src/adapters/memory.js";
+import { DirectRunExecutionScheduler } from "../src/adapters/run-execution-scheduler.js";
+import { InMemoryRunStore } from "../src/adapters/memory.js";
 import { DeterministicPlanGenerator, ScriptedRunExecutor } from "../src/adapters/local.js";
 import type { PrepareRunInput } from "../src/domain/model.js";
 import type {
@@ -56,6 +55,7 @@ class FakePullRequestReader implements PullRequestReader {
       ...input,
       headSha: "abcdef1234567890",
       targetEnvironment: "staging",
+      targetBaseUrl: "https://staging.example.com",
       criteria: [
         {
           id: "AC-001",
@@ -143,6 +143,7 @@ test("dispatches run and approve commands through the real run lifecycle", async
   });
   const dispatcher = new GitHubWebhookDispatcher({
     runService,
+    executionScheduler: new DirectRunExecutionScheduler(runService),
     pullRequests: new FakePullRequestReader(),
     authorizer: new AllowReviewer(),
     clients: new FakeFactory(),
@@ -180,4 +181,3 @@ function issueCommentPayload(body: string): unknown {
     },
   };
 }
-

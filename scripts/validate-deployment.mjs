@@ -28,9 +28,11 @@ const required = [
   "RunsTable",
   "DeliveriesTable",
   "WebhookQueue",
+  "ExecutionQueue",
   "WebhookFunction",
   "GitHubAppSetupFunction",
   "GitHubWorkerFunction",
+  "RunExecutionWorkerFunction",
 ];
 for (const logicalId of required) {
   if (!application.Resources[logicalId]) {
@@ -38,4 +40,13 @@ for (const logicalId of required) {
   }
 }
 
-console.log("Deployment templates parsed and required resources are present.");
+const commandEnvironment =
+  application.Resources.GitHubWorkerFunction.Properties.Environment.Variables;
+if (!commandEnvironment.SPEC2PROOF_EXECUTION_QUEUE_URL) {
+  throw new Error("GitHubWorkerFunction does not schedule the execution queue");
+}
+if (commandEnvironment.SPEC2PROOF_AGENT_RUNTIME_ARN) {
+  throw new Error("GitHubWorkerFunction must not block on AgentCore execution");
+}
+
+console.log("Deployment templates parsed and command/execution workers are separated.");

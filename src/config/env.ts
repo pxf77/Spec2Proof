@@ -24,6 +24,16 @@ const githubLimitsSchema = z.object({
     .default(4_000),
 });
 
+const githubApiSchema = z.object({
+  GITHUB_APP_SECRET_ARN: z.string().min(1),
+  GITHUB_API_URL: z
+    .string()
+    .url()
+    .default("https://api.github.com")
+    .transform(stripTrailingSlash),
+  SPEC2PROOF_RUNS_TABLE: z.string().min(1),
+});
+
 export const webhookEnvSchema = sharedEnvSchema
   .extend({
     WEBHOOK_PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
@@ -80,25 +90,29 @@ export const awsWebhookEnvSchema = sharedEnvSchema.extend({
   SPEC2PROOF_WEBHOOK_QUEUE_URL: z.string().url(),
 });
 
-export const awsWorkerEnvSchema = sharedEnvSchema
-  .extend({
-    GITHUB_APP_SECRET_ARN: z.string().min(1),
-    GITHUB_API_URL: z
-      .string()
-      .url()
-      .default("https://api.github.com")
-      .transform(stripTrailingSlash),
-    SPEC2PROOF_RUNS_TABLE: z.string().min(1),
-    SPEC2PROOF_AGENT_RUNTIME_ARN: z.string().min(20),
-    SPEC2PROOF_AGENT_RUNTIME_QUALIFIER: z.string().min(1).default("DEFAULT"),
-    SPEC2PROOF_AGENT_RUNTIME_TIMEOUT_SECONDS: z.coerce
-      .number()
-      .int()
-      .min(30)
-      .max(1_800)
-      .default(900),
-  })
-  .and(githubLimitsSchema);
+export const awsCommandWorkerEnvSchema = sharedEnvSchema
+  .and(githubApiSchema)
+  .and(githubLimitsSchema)
+  .and(
+    z.object({
+      SPEC2PROOF_EXECUTION_QUEUE_URL: z.string().url(),
+    }),
+  );
+
+export const awsExecutionWorkerEnvSchema = sharedEnvSchema
+  .and(githubApiSchema)
+  .and(
+    z.object({
+      SPEC2PROOF_AGENT_RUNTIME_ARN: z.string().min(20),
+      SPEC2PROOF_AGENT_RUNTIME_QUALIFIER: z.string().min(1).default("DEFAULT"),
+      SPEC2PROOF_AGENT_RUNTIME_TIMEOUT_SECONDS: z.coerce
+        .number()
+        .int()
+        .min(30)
+        .max(1_800)
+        .default(900),
+    }),
+  );
 
 export const githubSetupEnvSchema = z.object({
   AWS_REGION: z.string().min(1).default("us-west-2"),
@@ -120,7 +134,8 @@ export const githubSetupEnvSchema = z.object({
 export type WebhookEnvironment = z.infer<typeof webhookEnvSchema>;
 export type AgentRuntimeEnvironment = z.infer<typeof agentRuntimeEnvSchema>;
 export type AwsWebhookEnvironment = z.infer<typeof awsWebhookEnvSchema>;
-export type AwsWorkerEnvironment = z.infer<typeof awsWorkerEnvSchema>;
+export type AwsCommandWorkerEnvironment = z.infer<typeof awsCommandWorkerEnvSchema>;
+export type AwsExecutionWorkerEnvironment = z.infer<typeof awsExecutionWorkerEnvSchema>;
 export type GitHubSetupEnvironment = z.infer<typeof githubSetupEnvSchema>;
 
 export function loadWebhookEnvironment(
@@ -141,10 +156,16 @@ export function loadAwsWebhookEnvironment(
   return awsWebhookEnvSchema.parse(input);
 }
 
-export function loadAwsWorkerEnvironment(
+export function loadAwsCommandWorkerEnvironment(
   input: NodeJS.ProcessEnv = process.env,
-): AwsWorkerEnvironment {
-  return awsWorkerEnvSchema.parse(input);
+): AwsCommandWorkerEnvironment {
+  return awsCommandWorkerEnvSchema.parse(input);
+}
+
+export function loadAwsExecutionWorkerEnvironment(
+  input: NodeJS.ProcessEnv = process.env,
+): AwsExecutionWorkerEnvironment {
+  return awsExecutionWorkerEnvSchema.parse(input);
 }
 
 export function loadGitHubSetupEnvironment(
@@ -156,8 +177,11 @@ export function loadGitHubSetupEnvironment(
 // Compatibility aliases retained for callers created by the initial scaffold.
 export const loadWebhookEnv = loadWebhookEnvironment;
 export const loadAgentRuntimeEnv = loadRuntimeEnvironment;
+export const awsWorkerEnvSchema = awsCommandWorkerEnvSchema;
+export const loadAwsWorkerEnvironment = loadAwsCommandWorkerEnvironment;
 export type WebhookEnv = WebhookEnvironment;
 export type AgentRuntimeEnv = AgentRuntimeEnvironment;
+export type AwsWorkerEnvironment = AwsCommandWorkerEnvironment;
 
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/u, "");

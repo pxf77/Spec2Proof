@@ -15,6 +15,10 @@ export interface RunExecutor {
   cancel?(runId: string): Promise<void>;
 }
 
+export interface RunExecutionScheduler {
+  schedule(runId: string): Promise<void>;
+}
+
 export interface RunStore {
   get(runId: string): Promise<AcceptanceRun | undefined>;
   findLatest(repository: string, pullRequestNumber: number): Promise<AcceptanceRun | undefined>;
