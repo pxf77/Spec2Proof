@@ -89,7 +89,6 @@ export const awsWorkerEnvSchema = sharedEnvSchema
       .default("https://api.github.com")
       .transform(stripTrailingSlash),
     SPEC2PROOF_RUNS_TABLE: z.string().min(1),
-    SPEC2PROOF_RUNS_PR_INDEX: z.string().min(1).default("pr-created-index"),
     SPEC2PROOF_AGENT_RUNTIME_ARN: z.string().min(20),
     SPEC2PROOF_AGENT_RUNTIME_QUALIFIER: z.string().min(1).default("DEFAULT"),
     SPEC2PROOF_AGENT_RUNTIME_TIMEOUT_SECONDS: z.coerce

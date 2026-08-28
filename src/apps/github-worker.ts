@@ -75,10 +75,7 @@ async function createDispatcher(): Promise<GitHubWebhookDispatcher> {
       qualifier: environment.SPEC2PROOF_AGENT_RUNTIME_QUALIFIER,
       timeoutMs: environment.SPEC2PROOF_AGENT_RUNTIME_TIMEOUT_SECONDS * 1_000,
     }),
-    store: new DynamoDbRunStore(
-      environment.SPEC2PROOF_RUNS_TABLE,
-      environment.SPEC2PROOF_RUNS_PR_INDEX,
-    ),
+    store: new DynamoDbRunStore(environment.SPEC2PROOF_RUNS_TABLE),
     publisher,
     clock: new SystemClock(),
     ids: new RandomIdGenerator(),

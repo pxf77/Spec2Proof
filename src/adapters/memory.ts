@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { AcceptanceRun, CriterionResult } from "../domain/model.js";
+import type {
+  AcceptanceRun,
+  CriterionResult,
+  RunLifecycle,
+} from "../domain/model.js";
 import type {
   Clock,
   CriterionResultSink,
@@ -31,6 +35,18 @@ export class InMemoryRunStore implements RunStore {
 
   public async save(run: AcceptanceRun): Promise<void> {
     this.runs.set(run.runId, structuredClone(run));
+  }
+
+  public async saveIfLifecycle(
+    run: AcceptanceRun,
+    expected: RunLifecycle,
+  ): Promise<boolean> {
+    const current = this.runs.get(run.runId);
+    if (!current || current.lifecycle !== expected) {
+      return false;
+    }
+    this.runs.set(run.runId, structuredClone(run));
+    return true;
   }
 }
 

@@ -3,6 +3,7 @@ import type {
   CriterionResult,
   ExecutionPlan,
   PrepareRunInput,
+  RunLifecycle,
 } from "../domain/model.js";
 
 export interface PlanGenerator {
@@ -18,6 +19,7 @@ export interface RunStore {
   get(runId: string): Promise<AcceptanceRun | undefined>;
   findLatest(repository: string, pullRequestNumber: number): Promise<AcceptanceRun | undefined>;
   save(run: AcceptanceRun): Promise<void>;
+  saveIfLifecycle(run: AcceptanceRun, expected: RunLifecycle): Promise<boolean>;
 }
 
 export interface RunPublisher {

@@ -4,6 +4,7 @@ import type {
   AcceptanceRun,
   ExecutionPlan,
   PrepareRunInput,
+  PullRequestContext,
 } from "../domain/model.js";
 import { summarizeRun } from "../domain/verdict.js";
 import type {
@@ -43,9 +44,7 @@ export class RunService {
       headSha: input.headSha,
       targetEnvironment: input.targetEnvironment,
       targetBaseUrl: input.targetBaseUrl,
-      pullRequestContext: input.pullRequestContext
-        ? structuredClone(input.pullRequestContext)
-        : undefined,
+      pullRequestContext: compactPullRequestContext(input.pullRequestContext),
       lifecycle: "AWAITING_APPROVAL",
       coverageComplete: false,
       criteria: structuredClone(input.criteria),
@@ -66,13 +65,17 @@ export class RunService {
   ): Promise<AcceptanceRun> {
     const run = await this.requireRun(runId);
 
-    if (run.lifecycle !== "AWAITING_APPROVAL") {
-      throw new Error(`Run ${runId} is not awaiting approval`);
-    }
     if (run.headSha !== currentHeadSha) {
       throw new Error(
         `Run ${runId} targets stale head ${run.headSha}; current head is ${currentHeadSha}`,
       );
+    }
+    if (run.lifecycle === "RUNNING") {
+      await this.dependencies.publisher.runStarted(run);
+      return run;
+    }
+    if (run.lifecycle !== "AWAITING_APPROVAL") {
+      throw new Error(`Run ${runId} is not awaiting approval`);
     }
 
     const now = this.dependencies.clock.now().toISOString();
@@ -84,13 +87,29 @@ export class RunService {
       startedAt: now,
     };
 
-    await this.dependencies.store.save(approved);
+    const saved = await this.dependencies.store.saveIfLifecycle(
+      approved,
+      "AWAITING_APPROVAL",
+    );
+    if (!saved) {
+      const current = await this.requireRun(runId);
+      if (current.lifecycle === "RUNNING" && current.headSha === currentHeadSha) {
+        await this.dependencies.publisher.runStarted(current);
+        return current;
+      }
+      throw new Error(`Run ${runId} changed state while approval was being applied`);
+    }
+
     await this.dependencies.publisher.runStarted(approved);
     return approved;
   }
 
   public async executeRun(runId: string, signal?: AbortSignal): Promise<AcceptanceRun> {
     const run = await this.requireRun(runId);
+    if (run.lifecycle === "COMPLETED") {
+      await this.dependencies.publisher.runCompleted(run);
+      return run;
+    }
     if (run.lifecycle !== "RUNNING") {
       throw new Error(`Run ${runId} is not running`);
     }
@@ -114,11 +133,6 @@ export class RunService {
       }));
     }
 
-    const current = await this.requireRun(runId);
-    if (current.lifecycle === "COMPLETED" && current.verdict === "CANCELLED") {
-      return current;
-    }
-
     const summary = summarizeRun(run.criteria, results);
     const completed: AcceptanceRun = {
       ...run,
@@ -129,36 +143,71 @@ export class RunService {
       completedAt: this.dependencies.clock.now().toISOString(),
     };
 
-    await this.dependencies.store.save(completed);
+    const saved = await this.dependencies.store.saveIfLifecycle(completed, "RUNNING");
+    if (!saved) {
+      const current = await this.requireRun(runId);
+      if (current.lifecycle === "COMPLETED") {
+        await this.dependencies.publisher.runCompleted(current);
+        return current;
+      }
+      throw new Error(`Run ${runId} changed state while execution was completing`);
+    }
+
     await this.dependencies.publisher.runCompleted(completed);
     return completed;
   }
 
   public async cancelRun(runId: string, reason: string): Promise<AcceptanceRun> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const run = await this.requireRun(runId);
+      if (run.lifecycle === "COMPLETED") {
+        await this.dependencies.publisher.runCompleted(run);
+        return run;
+      }
+
+      const cancelled: AcceptanceRun = {
+        ...run,
+        lifecycle: "COMPLETED",
+        verdict: "CANCELLED",
+        coverageComplete: false,
+        cancellationReason: reason,
+        completedAt: this.dependencies.clock.now().toISOString(),
+      };
+
+      const saved = await this.dependencies.store.saveIfLifecycle(
+        cancelled,
+        run.lifecycle,
+      );
+      if (!saved) {
+        continue;
+      }
+
+      try {
+        await this.dependencies.executor.cancel?.(runId);
+      } catch {
+        // The terminal state is already durable. Runtime cancellation is best effort.
+      }
+      await this.dependencies.publisher.runCompleted(cancelled);
+      return cancelled;
+    }
+
+    throw new Error(`Run ${runId} changed state repeatedly while cancellation was applied`);
+  }
+
+  public async publishRun(runId: string): Promise<AcceptanceRun> {
     const run = await this.requireRun(runId);
-    if (run.lifecycle === "COMPLETED") {
-      return run;
+    switch (run.lifecycle) {
+      case "AWAITING_APPROVAL":
+        await this.dependencies.publisher.planReady(run);
+        break;
+      case "RUNNING":
+        await this.dependencies.publisher.runStarted(run);
+        break;
+      case "COMPLETED":
+        await this.dependencies.publisher.runCompleted(run);
+        break;
     }
-
-    const cancelled: AcceptanceRun = {
-      ...run,
-      lifecycle: "COMPLETED",
-      verdict: "CANCELLED",
-      coverageComplete: false,
-      cancellationReason: reason,
-      completedAt: this.dependencies.clock.now().toISOString(),
-    };
-
-    // Persist the terminal state before aborting the executor so a concurrently
-    // unwinding execution cannot overwrite cancellation with INCONCLUSIVE.
-    await this.dependencies.store.save(cancelled);
-    try {
-      await this.dependencies.executor.cancel?.(runId);
-    } catch {
-      // Cancellation is best effort after the terminal state is durable.
-    }
-    await this.dependencies.publisher.runCompleted(cancelled);
-    return cancelled;
+    return run;
   }
 
   public async getRun(runId: string): Promise<AcceptanceRun | undefined> {
@@ -179,6 +228,24 @@ export class RunService {
     }
     return run;
   }
+}
+
+function compactPullRequestContext(
+  context: PullRequestContext | undefined,
+): PullRequestContext | undefined {
+  if (!context) {
+    return undefined;
+  }
+  return {
+    ...structuredClone(context),
+    changedFiles: context.changedFiles.map((file) => ({
+      path: file.path,
+      status: file.status,
+      additions: file.additions,
+      deletions: file.deletions,
+      patchTruncated: file.patchTruncated,
+    })),
+  };
 }
 
 function validateTarget(targetBaseUrl: string | undefined): void {

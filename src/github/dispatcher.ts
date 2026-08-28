@@ -99,7 +99,7 @@ export class GitHubWebhookDispatcher {
     try {
       switch (command.name) {
         case "run":
-          await this.handleRun(context, client);
+          await this.handleRun(context);
           break;
         case "approve":
           await this.handleApprove(context);
@@ -170,10 +170,7 @@ export class GitHubWebhookDispatcher {
     );
   }
 
-  private async handleRun(
-    context: CommandContext,
-    client: GitHubInstallationClient,
-  ): Promise<void> {
+  private async handleRun(context: CommandContext): Promise<void> {
     const input = await this.dependencies.pullRequests.read(context);
     const latest = await this.dependencies.runService.findLatestRun(
       context.repository,
@@ -184,11 +181,7 @@ export class GitHubWebhookDispatcher {
       latest.headSha === input.headSha &&
       latest.lifecycle !== "COMPLETED"
     ) {
-      await client.createIssueComment(
-        context.repository,
-        context.pullRequestNumber,
-        `## Spec2Proof\n\nRun \`${latest.runId}\` is already ${latest.lifecycle.toLowerCase().replaceAll("_", " ")} for commit \`${input.headSha.slice(0, 12)}\`.`,
-      );
+      await this.dependencies.runService.publishRun(latest.runId);
       return;
     }
     await this.dependencies.runService.prepareRun(input);
@@ -239,8 +232,9 @@ export class GitHubWebhookDispatcher {
     if (latest.lifecycle !== "COMPLETED") {
       throw new Error(`Run ${latest.runId} has not completed`);
     }
-    const currentHeadSha = await this.dependencies.pullRequests.getHeadSha(context);
-    if (currentHeadSha !== latest.headSha) {
+
+    const input = await this.dependencies.pullRequests.read(context);
+    if (input.headSha !== latest.headSha) {
       throw new Error("The pull request head changed; start a full run instead");
     }
 
@@ -258,15 +252,11 @@ export class GitHubWebhookDispatcher {
       return;
     }
 
-    await this.dependencies.runService.prepareRun({
-      installationId: context.installationId,
-      repository: latest.repository,
-      pullRequestNumber: latest.pullRequestNumber,
-      headSha: latest.headSha,
-      targetEnvironment: latest.targetEnvironment,
-      pullRequestContext: latest.pullRequestContext,
-      criteria: latest.criteria.filter((criterion) => failedIds.has(criterion.id)),
-    });
+    const criteria = input.criteria.filter((criterion) => failedIds.has(criterion.id));
+    if (criteria.length === 0) {
+      throw new Error("Failed criteria are no longer present in the pull request SPEC");
+    }
+    await this.dependencies.runService.prepareRun({ ...input, criteria });
   }
 
   private async handleStatus(

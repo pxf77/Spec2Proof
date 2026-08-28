@@ -1,30 +1,42 @@
+import { createHash } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
-  QueryCommand,
+  TransactWriteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { RunStore } from "../application/ports.js";
-import type { AcceptanceRun } from "../domain/model.js";
+import type {
+  AcceptanceRun,
+  RunLifecycle,
+} from "../domain/model.js";
 
 interface RunItem {
   runId: string;
-  prKey: string;
-  createdAt: string;
+  itemType: "RUN";
   run: AcceptanceRun;
+}
+
+interface LatestRunPointer {
+  runId: string;
+  itemType: "LATEST";
+  latestRunId: string;
 }
 
 export class DynamoDbRunStore implements RunStore {
   public constructor(
     private readonly tableName: string,
-    private readonly prIndexName: string,
     private readonly client = DynamoDBDocumentClient.from(new DynamoDBClient({})),
   ) {}
 
   public async get(runId: string): Promise<AcceptanceRun | undefined> {
     const response = await this.client.send(
-      new GetCommand({ TableName: this.tableName, Key: { runId } }),
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { runId },
+        ConsistentRead: true,
+      }),
     );
     return toRun(response.Item);
   }
@@ -33,40 +45,92 @@ export class DynamoDbRunStore implements RunStore {
     repository: string,
     pullRequestNumber: number,
   ): Promise<AcceptanceRun | undefined> {
-    const response = await this.client.send(
-      new QueryCommand({
+    const pointerResponse = await this.client.send(
+      new GetCommand({
         TableName: this.tableName,
-        IndexName: this.prIndexName,
-        KeyConditionExpression: "prKey = :prKey",
-        ExpressionAttributeValues: {
-          ":prKey": prKey(repository, pullRequestNumber),
-        },
-        ScanIndexForward: false,
-        Limit: 1,
+        Key: { runId: latestPointerKey(repository, pullRequestNumber) },
+        ConsistentRead: true,
       }),
     );
-    return toRun(response.Items?.[0]);
+    const latestRunId = pointerResponse.Item?.latestRunId;
+    return typeof latestRunId === "string" ? this.get(latestRunId) : undefined;
   }
 
   public async save(run: AcceptanceRun): Promise<void> {
-    const item: RunItem = {
-      runId: run.runId,
-      prKey: prKey(run.repository, run.pullRequestNumber),
-      createdAt: run.createdAt,
-      run: structuredClone(run),
+    const runItem = toRunItem(run);
+    const pointer: LatestRunPointer = {
+      runId: latestPointerKey(run.repository, run.pullRequestNumber),
+      itemType: "LATEST",
+      latestRunId: run.runId,
     };
-    await this.client.send(new PutCommand({ TableName: this.tableName, Item: item }));
+
+    await this.client.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          { Put: { TableName: this.tableName, Item: runItem } },
+          { Put: { TableName: this.tableName, Item: pointer } },
+        ],
+      }),
+    );
+  }
+
+  public async saveIfLifecycle(
+    run: AcceptanceRun,
+    expected: RunLifecycle,
+  ): Promise<boolean> {
+    try {
+      await this.client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: toRunItem(run),
+          ConditionExpression: "#run.#lifecycle = :expected",
+          ExpressionAttributeNames: {
+            "#run": "run",
+            "#lifecycle": "lifecycle",
+          },
+          ExpressionAttributeValues: { ":expected": expected },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (isConditionalCheckFailure(error)) {
+        return false;
+      }
+      throw error;
+    }
   }
 }
 
-function prKey(repository: string, pullRequestNumber: number): string {
-  return `${repository.toLowerCase()}#${pullRequestNumber}`;
+function toRunItem(run: AcceptanceRun): RunItem {
+  return {
+    runId: run.runId,
+    itemType: "RUN",
+    run: structuredClone(run),
+  };
 }
 
 function toRun(item: Record<string, unknown> | undefined): AcceptanceRun | undefined {
-  const run = item?.run;
+  if (item?.itemType !== "RUN") {
+    return undefined;
+  }
+  const run = item.run;
   if (!run || typeof run !== "object" || Array.isArray(run)) {
     return undefined;
   }
   return structuredClone(run as AcceptanceRun);
+}
+
+function latestPointerKey(repository: string, pullRequestNumber: number): string {
+  const digest = createHash("sha256")
+    .update(`${repository.toLowerCase()}#${pullRequestNumber}`)
+    .digest("hex");
+  return `latest-${digest}`;
+}
+
+function isConditionalCheckFailure(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "ConditionalCheckFailedException" ||
+      error.message.includes("ConditionalCheckFailedException"))
+  );
 }
