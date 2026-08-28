@@ -69,6 +69,27 @@ if (deploymentWorkflow.permissions?.contents !== "read") {
   throw new Error("AWS deployment workflow must keep contents permission read-only");
 }
 
+const deployJob = deploymentWorkflow.jobs?.deploy;
+if (!deployJob || typeof deployJob !== "object") {
+  throw new Error("AWS deployment workflow does not define the deploy job");
+}
+if (deployJob.env?.SPEC2PROOF_SETUP_TOKEN !== undefined) {
+  throw new Error("Setup token must not be exposed at job scope");
+}
+
+const steps = Array.isArray(deployJob.steps) ? deployJob.steps : [];
+const dependencyIndex = steps.findIndex((step) =>
+  String(step?.name).includes("before AWS authentication"),
+);
+const credentialsIndex = steps.findIndex((step) =>
+  String(step?.name).includes("Configure temporary AWS credentials"),
+);
+if (dependencyIndex < 0 || credentialsIndex < 0 || dependencyIndex >= credentialsIndex) {
+  throw new Error(
+    "Repository and CLI dependencies must be installed before AWS credentials are issued",
+  );
+}
+
 const serializedWorkflow = JSON.stringify(deploymentWorkflow);
 const actionReferences = [...serializedWorkflow.matchAll(/"uses":"([^"]+)"/gu)].map(
   (match) => match[1],
@@ -91,6 +112,15 @@ if (/AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/u.test(serializedWorkflow)) {
   throw new Error("AWS deployment workflow must not use long-lived AWS access keys");
 }
 
+const setupSecretReferences = serializedWorkflow.match(
+  /secrets\.SPEC2PROOF_SETUP_TOKEN/gu,
+);
+if (setupSecretReferences?.length !== 2) {
+  throw new Error(
+    "Setup token must be scoped only to validation and control-plane deployment",
+  );
+}
+
 console.log(
-  "Deployment templates and the manual OIDC workflow passed structural validation.",
+  "Deployment templates and the manual OIDC workflow passed structural and secret-scope validation.",
 );
