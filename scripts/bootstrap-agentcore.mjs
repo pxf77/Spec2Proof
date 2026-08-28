@@ -44,11 +44,16 @@ writeFileSync(
   )}\n`,
 );
 
-for (const [command, args] of [
-  ["npm", ["run", "check"]],
+const commands = [];
+if (process.env.SPEC2PROOF_SKIP_REPOSITORY_CHECK !== "true") {
+  commands.push(["npm", ["run", "check"]]);
+}
+commands.push(
   ["agentcore", ["validate"]],
   ["agentcore", ["deploy", "--dry-run"]],
-]) {
+);
+
+for (const [command, args] of commands) {
   const result = spawnSync(command, args, {
     stdio: "inherit",
     shell: process.platform === "win32",

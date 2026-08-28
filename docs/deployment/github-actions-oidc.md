@@ -1,16 +1,33 @@
 # Deploy from GitHub Actions with AWS OIDC
 
-The `Deploy Spec2Proof to AWS` workflow performs the foundation, AgentCore Runtime, and control-plane deployments without storing long-lived AWS access keys in GitHub.
+The `Deploy Spec2Proof to AWS` workflow deploys the foundation stack, AgentCore Runtime, and GitHub App control plane without storing long-lived AWS access keys in GitHub.
 
-The workflow is manual-only, runs only from `main`, requires an explicit `DEPLOY_NON_PRODUCTION` confirmation, and requests only:
+The workflow is manual-only, runs only from `main`, and requires an explicit `DEPLOY_NON_PRODUCTION` confirmation.
 
-```yaml
-permissions:
-  contents: read
-  id-token: write
+## 1. Two-job credential boundary
+
+The workflow deliberately separates build-time package execution from AWS authorization:
+
+```text
+prepare job
+  permissions: contents: read
+  no id-token permission
+  → install dependencies
+  → run repository checks
+  → build the SAM application
+  → install the pinned AgentCore CLI locally
+  → upload a one-day verified deployment bundle
+
+deploy job
+  permissions: actions: read, contents: read, id-token: write
+  → download the verified bundle
+  → request temporary AWS credentials
+  → deploy foundation, Runtime, and control plane
 ```
 
-## 1. Create or select an AWS deployment role
+The deploy job does not check out repository content and does not run `npm install`, `npm ci`, `npm exec`, or `npx`. Project `node_modules` is excluded from the privileged bundle. Only the pinned local AgentCore CLI and prebuilt SAM artifacts cross the credential boundary.
+
+## 2. Create or select an AWS deployment role
 
 Configure the AWS account with the GitHub OIDC provider:
 
@@ -19,7 +36,7 @@ https://token.actions.githubusercontent.com
 Audience: sts.amazonaws.com
 ```
 
-The role trust policy must permit `sts:AssumeRoleWithWebIdentity` from the repository's `main` branch. This repository was created after GitHub introduced immutable OIDC subject identifiers, so the expected subject is:
+The role trust policy must permit `sts:AssumeRoleWithWebIdentity` from the repository's `main` branch. This repository uses GitHub immutable OIDC subject identifiers:
 
 ```text
 repo:pxf77@97281763/Spec2Proof@1346848535:ref:refs/heads/main
@@ -43,9 +60,9 @@ Example trust statement:
 }
 ```
 
-Do not use a wildcard subject that grants every branch, pull request, or repository access to the deployment role.
+Do not use a wildcard subject granting every branch, pull request, or repository access to the role.
 
-The role needs deployment permissions for the resources declared in:
+The role needs deployment permissions for resources declared in:
 
 ```text
 deploy/aws/foundation.yaml
@@ -53,16 +70,16 @@ deploy/aws/template.yaml
 agentcore/agentcore.json
 ```
 
-That includes CloudFormation, SAM packaging S3 access, IAM role and policy management required by the templates, Lambda, API Gateway, SQS, DynamoDB, Secrets Manager, ECR, Bedrock, AgentCore, CloudWatch Logs, X-Ray, and `iam:PassRole` for the created execution roles. Apply the narrowest policy compatible with the deployment in the target account; do not attach a permanent administrator policy merely to simplify the first run.
+This includes CloudFormation, SAM packaging S3 access, the IAM operations required by the templates, Lambda, API Gateway, SQS, DynamoDB, Secrets Manager, ECR, Bedrock, AgentCore, CloudWatch Logs, X-Ray, and narrowly scoped `iam:PassRole`. Do not attach a permanent administrator policy merely to simplify the first run.
 
-## 2. Configure GitHub protected values
+## 3. Configure protected GitHub values
 
-In the repository settings, add:
+Add these repository Actions values:
 
 | Type | Name | Value |
 |---|---|---|
-| Actions variable | `AWS_DEPLOY_ROLE_ARN` | ARN of the OIDC-trusted deployment role |
-| Actions secret | `SPEC2PROOF_SETUP_TOKEN` | Random one-time value of at least 24 characters |
+| Variable | `AWS_DEPLOY_ROLE_ARN` | ARN of the OIDC-trusted deployment role |
+| Secret | `SPEC2PROOF_SETUP_TOKEN` | Random one-time value of at least 24 characters |
 
 Generate the setup token locally:
 
@@ -70,11 +87,11 @@ Generate the setup token locally:
 openssl rand -hex 24
 ```
 
-The token protects the temporary GitHub App manifest setup endpoint. The workflow passes it to CloudFormation as a `NoEcho` parameter and never prints it in logs or the job summary.
+The token is available only to the input-validation and control-plane deployment steps. It is not exposed at workflow or job scope, and it is never printed.
 
 No `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY` secret is required.
 
-## 3. Run the deployment workflow
+## 4. Run the deployment workflow
 
 Open:
 
@@ -92,39 +109,37 @@ Select `DEPLOY_NON_PRODUCTION` and review:
 
 The host allowlist accepts hostnames only. Do not enter a URL, path, localhost, private address, or production host.
 
-## 4. What the workflow does
+## 5. Deployment sequence
 
 ```text
-GitHub OIDC token
-→ temporary AWS role session
-→ npm verification
-→ deploy foundation stack
-→ read evidence bucket and Runtime role outputs
-→ validate and deploy AgentCore Runtime
-→ read runtime ARN from AgentCore deployed state
-→ build and deploy control-plane stack
-→ publish non-secret outputs to the job summary
+unprivileged verified bundle
+→ GitHub OIDC role session
+→ foundation stack
+→ AgentCore Runtime
+→ Runtime ARN from fail-closed deployed-state parser
+→ prebuilt control-plane stack
+→ non-secret job summary
 ```
 
-The workflow pins every third-party action to an immutable commit SHA and pins the AgentCore CLI version. Upgrades must be reviewed as normal code changes.
+Every external Action is pinned to a full commit SHA. The AgentCore CLI is pinned to `0.28.1`. Upgrades require a normal reviewed code change.
 
-## 5. Complete GitHub App registration
+## 6. Complete GitHub App registration
 
-The job summary contains a `SetupUrlTemplate` with a placeholder. Replace the placeholder locally with the protected `SPEC2PROOF_SETUP_TOKEN`, open the URL, and create the GitHub App.
+The job summary contains a `SetupUrlTemplate` with a placeholder. Replace the placeholder locally with `SPEC2PROOF_SETUP_TOKEN`, then open the URL and create the GitHub App.
 
 The callback stores the generated App ID, PEM private key, and webhook secret directly in AWS Secrets Manager. It does not display those values.
 
 Install the App only on the selected demo repository, then rotate or remove the setup token and disable the setup route in a hardened deployment.
 
-## 6. Rollback and failure handling
+## 7. Rollback and failure handling
 
-The workflow uses `--no-fail-on-empty-changeset`, so re-running an unchanged deployment is safe. A failed CloudFormation deployment remains visible in the stack events. AgentCore deployment state remains in the ephemeral runner only and is not committed.
+The workflow uses `--no-fail-on-empty-changeset`, so an unchanged redeployment is safe. Failed CloudFormation and AgentCore operations remain visible in their native deployment records.
 
 Before retrying:
 
-1. inspect the failing CloudFormation stack event or AgentCore deployment output;
-2. correct the role policy, model access, allowlist, or template issue;
-3. do not weaken the Runtime URL policy or evidence contract;
+1. inspect the failing stack event or AgentCore output;
+2. correct role policy, model access, allowlist, or template configuration;
+3. do not weaken Runtime URL policy, lifecycle transitions, or evidence requirements;
 4. rerun the manual workflow from `main`.
 
 Failed webhook and execution messages remain in their respective DLQs for investigation.

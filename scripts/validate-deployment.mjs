@@ -55,43 +55,87 @@ if (commandEnvironment.SPEC2PROOF_AGENT_RUNTIME_ARN) {
   throw new Error("GitHubWorkerFunction must not block on AgentCore execution");
 }
 
-const deploymentWorkflow = readYaml(".github/workflows/deploy-aws.yml");
-if (!deploymentWorkflow.on?.workflow_dispatch) {
+const workflow = readYaml(".github/workflows/deploy-aws.yml");
+if (!workflow.on?.workflow_dispatch) {
   throw new Error("AWS deployment workflow must be manual-only");
 }
-if (Object.keys(deploymentWorkflow.on).some((event) => event !== "workflow_dispatch")) {
+if (Object.keys(workflow.on).some((event) => event !== "workflow_dispatch")) {
   throw new Error("AWS deployment workflow must not run on push or pull_request");
 }
-if (deploymentWorkflow.permissions?.["id-token"] !== "write") {
-  throw new Error("AWS deployment workflow requires id-token: write for OIDC");
-}
-if (deploymentWorkflow.permissions?.contents !== "read") {
-  throw new Error("AWS deployment workflow must keep contents permission read-only");
+if (workflow.permissions && Object.keys(workflow.permissions).length > 0) {
+  throw new Error("AWS deployment workflow must not grant permissions globally");
 }
 
-const deployJob = deploymentWorkflow.jobs?.deploy;
-if (!deployJob || typeof deployJob !== "object") {
-  throw new Error("AWS deployment workflow does not define the deploy job");
+const prepare = workflow.jobs?.prepare;
+const deploy = workflow.jobs?.deploy;
+if (!prepare || !deploy) {
+  throw new Error("AWS deployment workflow requires prepare and deploy jobs");
 }
-if (deployJob.env?.SPEC2PROOF_SETUP_TOKEN !== undefined) {
+if (prepare.permissions?.contents !== "read") {
+  throw new Error("Prepare job requires contents: read");
+}
+if (prepare.permissions?.["id-token"] !== undefined) {
+  throw new Error("Prepare job must not receive OIDC token permission");
+}
+if (deploy.permissions?.contents !== "read") {
+  throw new Error("Deploy job requires contents: read");
+}
+if (deploy.permissions?.actions !== "read") {
+  throw new Error("Deploy job requires actions: read for artifact download");
+}
+if (deploy.permissions?.["id-token"] !== "write") {
+  throw new Error("Deploy job requires id-token: write for AWS OIDC");
+}
+const needs = Array.isArray(deploy.needs) ? deploy.needs : [deploy.needs];
+if (!needs.includes("prepare")) {
+  throw new Error("Deploy job must consume the verified prepare job artifact");
+}
+if (deploy.env?.SPEC2PROOF_SETUP_TOKEN !== undefined) {
   throw new Error("Setup token must not be exposed at job scope");
 }
 
-const steps = Array.isArray(deployJob.steps) ? deployJob.steps : [];
-const dependencyIndex = steps.findIndex((step) =>
-  String(step?.name).includes("before AWS authentication"),
-);
-const credentialsIndex = steps.findIndex((step) =>
-  String(step?.name).includes("Configure temporary AWS credentials"),
-);
-if (dependencyIndex < 0 || credentialsIndex < 0 || dependencyIndex >= credentialsIndex) {
-  throw new Error(
-    "Repository and CLI dependencies must be installed before AWS credentials are issued",
-  );
+const prepareSteps = Array.isArray(prepare.steps) ? prepare.steps : [];
+const deploySteps = Array.isArray(deploy.steps) ? deploy.steps : [];
+const prepareText = JSON.stringify(prepare);
+const deployText = JSON.stringify(deploy);
+const workflowText = JSON.stringify(workflow);
+
+if (prepareText.includes("secrets.SPEC2PROOF_SETUP_TOKEN")) {
+  throw new Error("Prepare job must not receive the GitHub App setup token");
+}
+if (!prepareText.includes("actions/upload-artifact@")) {
+  throw new Error("Prepare job must publish a verified deployment artifact");
+}
+if (!deployText.includes("actions/download-artifact@")) {
+  throw new Error("Deploy job must download the verified deployment artifact");
+}
+if (deployText.includes("actions/checkout@")) {
+  throw new Error("Deploy job must not checkout mutable repository content");
+}
+if (!prepareText.includes("sam build --template-file deploy/aws/template.yaml")) {
+  throw new Error("SAM application must be built before OIDC permission is available");
+}
+if (!prepareText.includes("--prefix .deployment-tools")) {
+  throw new Error("AgentCore CLI must be installed in the unprivileged prepare job");
+}
+if (!prepareText.includes("--exclude='./node_modules'")) {
+  throw new Error("Privileged deployment bundle must exclude project node_modules");
+}
+if (!deployText.includes(".deployment-tools/node_modules/.bin")) {
+  throw new Error("Deploy job must use the verified local AgentCore CLI");
+}
+if (!deployText.includes("SPEC2PROOF_SKIP_REPOSITORY_CHECK")) {
+  throw new Error("Deploy job must not rerun repository dependencies with AWS credentials");
 }
 
-const serializedWorkflow = JSON.stringify(deploymentWorkflow);
-const actionReferences = [...serializedWorkflow.matchAll(/"uses":"([^"]+)"/gu)].map(
+const deployRuns = deploySteps
+  .map((step) => (typeof step?.run === "string" ? step.run : ""))
+  .join("\n");
+if (/(^|\s)(npm\s+(install|ci|exec)|npx)(\s|$)/u.test(deployRuns)) {
+  throw new Error("Deploy job must not install or execute registry packages after OIDC");
+}
+
+const actionReferences = [...workflowText.matchAll(/"uses":"([^"]+)"/gu)].map(
   (match) => match[1],
 );
 if (actionReferences.length === 0) {
@@ -102,25 +146,22 @@ for (const reference of actionReferences) {
     throw new Error(`Deployment action is not pinned to a commit SHA: ${reference}`);
   }
 }
-if (!serializedWorkflow.includes("vars.AWS_DEPLOY_ROLE_ARN")) {
+if (!workflowText.includes("vars.AWS_DEPLOY_ROLE_ARN")) {
   throw new Error("AWS deployment workflow does not use the OIDC deployment role variable");
 }
-if (!serializedWorkflow.includes("secrets.SPEC2PROOF_SETUP_TOKEN")) {
+if (!workflowText.includes("secrets.SPEC2PROOF_SETUP_TOKEN")) {
   throw new Error("AWS deployment workflow does not use the protected setup token");
 }
-if (/AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/u.test(serializedWorkflow)) {
+if (/AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/u.test(workflowText)) {
   throw new Error("AWS deployment workflow must not use long-lived AWS access keys");
 }
-
-const setupSecretReferences = serializedWorkflow.match(
-  /secrets\.SPEC2PROOF_SETUP_TOKEN/gu,
-);
-if (setupSecretReferences?.length !== 2) {
+const setupTokenReferences = workflowText.match(/secrets\.SPEC2PROOF_SETUP_TOKEN/gu);
+if (setupTokenReferences?.length !== 2) {
   throw new Error(
     "Setup token must be scoped only to validation and control-plane deployment",
   );
 }
 
 console.log(
-  "Deployment templates and the manual OIDC workflow passed structural and secret-scope validation.",
+  "Deployment templates and the two-job OIDC workflow passed structural and credential-boundary validation.",
 );
