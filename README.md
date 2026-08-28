@@ -4,16 +4,19 @@
 
 ## Current status
 
-The repository now contains a deployable Stage 3 architecture:
+The repository contains the verified Stage 3 architecture:
 
 - GitHub App JWT and Installation Token authentication;
 - webhook HMAC verification and persistent delivery deduplication;
-- FIFO webhook queueing grouped by repository and pull request;
-- persistent DynamoDB run storage;
-- real PR metadata and bounded changed-file context;
+- a per-PR FIFO command queue for ordered GitHub events;
+- a separate FIFO execution queue for long-running AgentCore work;
+- persistent DynamoDB run storage with strongly consistent latest-run pointers;
+- lifecycle-conditional writes preventing stale completion from replacing cancellation;
+- real PR metadata and bounded changed-file context for planning;
+- compact persisted PR context that excludes raw patches;
 - structured acceptance-spec parsing from the PR description;
 - Strands planning plus reviewer approval;
-- AWS SDK invocation of AgentCore Runtime;
+- AWS SDK invocation of AgentCore Runtime from an execution worker;
 - managed AgentCore Browser adapter;
 - S3 evidence storage;
 - one updatable PR summary and one Check Run per acceptance run;
@@ -21,7 +24,7 @@ The repository now contains a deployable Stage 3 architecture:
 - a deterministic DemoShop target with Playwright E2E coverage;
 - AWS SAM and AgentCore deployment assets.
 
-Account-bound AWS provisioning and GitHub App installation are performed with the deployment runbook; credentials and generated deployment state are not committed.
+Account-bound AWS provisioning, GitHub Pages enablement, and GitHub App installation are performed with the deployment runbook. Credentials and generated deployment state are not committed.
 
 ## Core workflow
 
@@ -29,31 +32,37 @@ Account-bound AWS provisioning and GitHub App installation are performed with th
 GitHub Pull Request comment
 → authenticated webhook Lambda
 → delivery TTL check
-→ per-PR FIFO queue
-→ GitHub worker
+→ per-PR FIFO command queue
+→ GitHub command worker
 → explicit acceptance criteria + bounded diff context
 → Strands execution plan
 → human approval
+→ durable RUNNING transition
+→ FIFO execution queue
+→ execution worker
 → AgentCore Runtime
 → AgentCore Browser
 → deterministic assertions + S3 evidence
-→ DynamoDB run result
+→ lifecycle-conditional DynamoDB completion
 → GitHub Check + singleton PR summary
 → human merge decision
 ```
+
+`/spec2proof cancel` and `pull_request.synchronize` remain processable while AgentCore execution is running because the command worker does not block on the runtime invocation. A late runtime result cannot overwrite a durable `CANCELLED` verdict.
 
 ## Architecture
 
 ```text
 src/
-├── apps/              # local servers, Lambda handlers, AgentCore runtime
+├── apps/              # local servers, Lambda handlers, workers, AgentCore runtime
 ├── domain/            # acceptance/run models and verdict rules
 ├── application/       # thin use-case orchestration and ports
 ├── agent/             # Strands prompts, schemas, approved-plan guard, tools
-├── adapters/          # local Playwright and managed AgentCore Browser
+├── adapters/          # local execution, Playwright, scheduling adapters
 ├── aws/               # DynamoDB, SQS, S3, Secrets Manager, AgentCore SDK
+├── execution/         # durable execution-message contract
 ├── github/            # App auth, PR source, dispatcher, Check/comment publisher
-├── webhook/           # authenticated ingress and queued message contract
+├── webhook/           # authenticated ingress and queued webhook contract
 ├── security/          # URL allowlist and SSRF guardrails
 ├── config/            # validated local and AWS environment configuration
 └── observability/     # structured redacted logging
@@ -100,6 +109,8 @@ npm run dev:runtime
 npm run dev:webhook
 ```
 
+The local webhook uses direct in-process execution. The deployed AWS control plane uses the separate command and execution queues defined in `deploy/aws/template.yaml`.
+
 ## Deploy
 
 Follow the complete runbook:
@@ -109,9 +120,9 @@ Follow the complete runbook:
 Deployment is split into two explicit stacks:
 
 1. `deploy/aws/foundation.yaml` creates the private evidence bucket and AgentCore execution role.
-2. `deploy/aws/template.yaml` creates the GitHub webhook/control plane after the AgentCore Runtime ARN is known.
+2. `deploy/aws/template.yaml` creates the GitHub App control plane after the AgentCore Runtime ARN is known.
 
-The GitHub App setup endpoint uses GitHub's manifest flow and requests only Checks write, Contents read, Issues write, and Pull requests read. The callback writes the generated App ID, PEM, and webhook secret directly to Secrets Manager.
+The GitHub App setup endpoint uses GitHub's manifest flow and requests only Checks write, Contents read, Issues write, and Pull requests read. The callback writes the generated App ID, PEM private key, and webhook secret directly to Secrets Manager.
 
 ## DemoShop
 
@@ -173,6 +184,8 @@ Human and deterministic outcomes must be split into separate criteria.
 
 `approve`, `reject`, `cancel`, and `rerun-failed` require `write`, `maintain`, or `admin` repository permission. Approval is valid only for the exact PR Head SHA used by the plan.
 
+Repeated commands are idempotent at the GitHub publishing boundary. Repeated `/spec2proof run` republishes the active plan, and duplicate execution deliveries re-publish the stored terminal result instead of executing a completed run again.
+
 ## Trusted result path
 
 ```text
@@ -181,7 +194,7 @@ approved criterion / step / assertion IDs
 → evidence store-issued ID
 → invocation-local evidence ledger
 → enforced criterion result
-→ persisted run verdict
+→ lifecycle-conditional persisted verdict
 → GitHub Check conclusion
 ```
 
@@ -190,7 +203,7 @@ The model cannot supply a replacement expected value or arbitrary evidence ID to
 ## Verification
 
 ```bash
-npm run check       # strict typecheck, unit tests, build, deployment template checks
+npm run check       # strict typecheck, unit tests, build, deployment topology checks
 npm run check:e2e   # DemoShop browser tests
 ```
 
@@ -200,6 +213,7 @@ npm run check:e2e   # DemoShop browser tests
 - [Initial architecture](docs/architecture/initial-architecture.md)
 - [GitHub integration architecture](docs/architecture/github-integration.md)
 - [AWS and GitHub App deployment](docs/deployment/aws-and-github-app.md)
+- [Stage 3 verified completion](docs/implementation/stage-3-complete.md)
 - [Agent development rules](AGENTS.md)
 
 ## Explicit non-goals
@@ -210,7 +224,9 @@ npm run check:e2e   # DemoShop browser tests
 - arbitrary shell access;
 - hidden requirements inferred from a diff;
 - multi-agent orchestration for the MVP;
-- Gate/Owner/Lease/Receipt/Revision/Lineage/Fingerprint/CAS machinery.
+- generic Gate/Owner/Lease/Receipt/Revision/Lineage/Fingerprint or CAS protocols.
+
+The storage layer contains one narrow lifecycle precondition because a concrete stale-write race was demonstrated. It is not exposed as a workflow framework or business state machine.
 
 ## License
 
