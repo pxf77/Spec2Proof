@@ -64,7 +64,6 @@ jobs:
       MODEL_ID: ${{ inputs.model_id }}
       EVIDENCE_RETENTION_DAYS: ${{ inputs.evidence_retention_days }}
       DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-      SPEC2PROOF_SETUP_TOKEN: ${{ secrets.SPEC2PROOF_SETUP_TOKEN }}
       AGENTCORE_CLI_VERSION: 0.28.1
 
     steps:
@@ -81,6 +80,8 @@ jobs:
 
       - name: Validate protected deployment inputs
         shell: bash
+        env:
+          SPEC2PROOF_SETUP_TOKEN: ${{ secrets.SPEC2PROOF_SETUP_TOKEN }}
         run: |
           set -euo pipefail
           if [[ -z "$DEPLOY_ROLE_ARN" ]]; then
@@ -99,6 +100,16 @@ jobs:
             echo "The managed runtime deployment cannot target local hosts." >&2
             exit 1
           fi
+
+      - name: Install and verify repository dependencies before AWS authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install
+          npm run check
+          npm install --global "@aws/agentcore@${AGENTCORE_CLI_VERSION}"
+          agentcore --version
+          sam --version
 
       - name: Configure temporary AWS credentials with GitHub OIDC
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -120,16 +131,6 @@ jobs:
           fi
           echo "AWS_ACCOUNT_ID=$ACCOUNT_ID" >> "$GITHUB_ENV"
           echo "Authenticated to the configured AWS deployment role."
-
-      - name: Install and verify repository dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm install
-          npm run check
-          npm install --global "@aws/agentcore@${AGENTCORE_CLI_VERSION}"
-          agentcore --version
-          sam --version
 
       - name: Deploy evidence foundation
         shell: bash
@@ -205,6 +206,8 @@ jobs:
 
       - name: Deploy GitHub App control plane
         shell: bash
+        env:
+          SPEC2PROOF_SETUP_TOKEN: ${{ secrets.SPEC2PROOF_SETUP_TOKEN }}
         run: |
           set -euo pipefail
           sam deploy \
