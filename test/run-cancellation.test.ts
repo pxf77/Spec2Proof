@@ -75,5 +75,6 @@ test("cancellation remains terminal while an execution request unwinds", async (
   assert.equal(cancelled.verdict, "CANCELLED");
   assert.equal(executionResult.verdict, "CANCELLED");
   assert.equal((await store.get(prepared.runId))?.verdict, "CANCELLED");
-  assert.equal(publisher.completed.length, 1);
+  assert.equal(publisher.completed.length, 2);
+  assert.ok(publisher.completed.every((run) => run.verdict === "CANCELLED"));
 });
